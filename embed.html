@@ -1,0 +1,594 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ACE - Apeiro Citation Extractor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+    
+    <!-- CORE REACT LIBRARIES -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/htm@3.1.1/dist/htm.umd.js"></script>
+
+    <style>
+        body { background-color: #0f172a; color: white; font-family: 'Inter', sans-serif; overflow: hidden; }
+        .font-orbitron { font-family: 'Orbitron', sans-serif; }
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .animate-fade-in { animation: fadeIn 0.5s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        
+        .custom-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+        .custom-scroll::-webkit-scrollbar-track { background: #1e293b; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        .custom-scroll::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        
+        .shadow-blue-glow { text-shadow: 0 0 10px #00d9ff, 0 0 20px #00d9ff; }
+    </style>
+</head>
+<body>
+    <div id="root" class="h-screen flex flex-col"></div>
+    <div id="debug-console" style="position:fixed; bottom:0; left:0; right:0; background:rgba(0,0,0,0.8); color:red; font-size:10px; padding:5px; display:none; z-index:9999;"></div>
+
+    <script>
+        // --- ERROR TRAPPING ---
+        window.onerror = function(msg, url, line, col, error) {
+            const debug = document.getElementById('debug-console');
+            if(debug) {
+                debug.style.display = 'block';
+                debug.innerHTML += `[CRITICAL ERROR] ${msg} at line ${line}<br/>`;
+            }
+            return false;
+        };
+
+        // --- SETUP HTM ---
+        const html = htm.bind(React.createElement);
+        const { useState, useEffect, useRef } = React;
+
+        // --- CONFIGURATION ---
+        const API_KEY = "AIzaSyALjLV3VvZToBUB3aL12NDouE6X25UURTA"; 
+
+        // --- INLINE ICONS ---
+        const Icons = {
+            Sparkles: () => html`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>`,
+            Upload: () => html`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>`,
+            Download: () => html`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>`,
+            Star: () => html`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`,
+            AlertCircle: () => html`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>`,
+            FileText: () => html`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>`,
+            RefreshCw: () => html`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>`,
+            Type: () => html`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" x2="15" y1="20" y2="20"/><line x1="12" x2="12" y1="4" y2="20"/></svg>`
+        };
+
+        // --- API LOGIC ---
+        async function callGeminiDirect(input) {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`;
+            
+            const systemInstruction = `
+            You are the ACE (Apeiro Citation Extractor) engine. 
+            Adhere strictly to these business rules for ArXiv/CAR 2.0:
+
+            1. **ARXIV ID**: 
+               - If Manual ID provided, use it.
+               - Extract ID from document text into 'documentArxivId'.
+            
+            2. **AUTHORS**:
+               - Extract Given Name, Surname, Initials.
+               - Affiliations: Match superscripts (1, a, *) to affiliation list indices.
+               - If multiple markers (e.g. 1,2), capture ALL indices.
+               - **Correspondence (CRITICAL)**: Set 'isCorresponding' to TRUE if matched by phrases like:
+                 - "To whom correspondence should be addressed"
+                 - "Correspondence to"
+                 - "Corresponding author"
+                 - "Address correspondence to"
+                 - Or if marked by symbols (e.g., *, envelope ✉, †) that are explicitly defined in the footnotes as indicating correspondence.
+
+            3. **AFFILIATIONS**:
+               - Break down into: Organizations (Array), AddressPart, City, State (US/CA/AU only), PostalCode.
+               - **CountryCode**: MANDATORY. Use 3-letter ISO 3166-1 alpha-3 code (e.g. USA, GBR, DEU, TWN, HKG).
+
+            4. **REFERENCES**:
+               - Extract ALL.
+               - Remove trailing URLs/DOIs.
+
+            5. **XML**:
+               - Ensure structure supports 'bibrecord', 'head', 'citation-info'.
+            `;
+
+            let parts = [];
+            if (input.manualId) {
+                parts.push({ text: `CRITICAL OVERRIDE: The user provided Manual ID: "${input.manualId}". Use this as 'arxivId'.` });
+            }
+
+            const promptText = input.type === 'pdf' 
+                ? "Analyze PDF content and extract structured data." 
+                : "Analyze text content: \n" + input.content;
+
+            if (input.type === 'pdf') {
+                parts.push({ inlineData: { mimeType: 'application/pdf', data: input.content } });
+                parts.push({ text: promptText });
+            } else {
+                parts.push({ text: promptText });
+            }
+
+            const body = {
+                contents: [{ parts: parts }],
+                systemInstruction: { parts: [{ text: systemInstruction }] },
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: "OBJECT",
+                        properties: {
+                            arxivId: { type: "STRING" },
+                            documentArxivId: { type: "STRING", nullable: true },
+                            title: { type: "STRING" },
+                            keywords: { type: "ARRAY", items: { type: "STRING" } },
+                            categories: { type: "ARRAY", items: { type: "STRING" } },
+                            authors: {
+                                type: "ARRAY",
+                                items: {
+                                    type: "OBJECT",
+                                    properties: {
+                                        firstName: { type: "STRING" },
+                                        surname: { type: "STRING" },
+                                        initials: { type: "STRING" },
+                                        suffix: { type: "STRING", nullable: true },
+                                        degree: { type: "STRING", nullable: true },
+                                        email: { type: "STRING", nullable: true },
+                                        orcid: { type: "STRING", nullable: true },
+                                        isCorresponding: { type: "BOOLEAN", nullable: true },
+                                        affiliationIndices: { type: "ARRAY", items: { type: "NUMBER" } }
+                                    },
+                                    required: ["firstName", "surname", "initials"]
+                                }
+                            },
+                            affiliations: {
+                                type: "ARRAY",
+                                items: {
+                                    type: "OBJECT",
+                                    properties: {
+                                        text: { type: "STRING" },
+                                        organizations: { type: "ARRAY", items: { type: "STRING" } },
+                                        addressPart: { type: "STRING", nullable: true },
+                                        city: { type: "STRING", nullable: true },
+                                        state: { type: "STRING", nullable: true },
+                                        postalCode: { type: "STRING", nullable: true },
+                                        country: { type: "STRING", nullable: true },
+                                        countryCode: { type: "STRING", nullable: true }
+                                    },
+                                    required: ["text", "organizations"]
+                                }
+                            },
+                            abstract: { type: "STRING" },
+                            references: { type: "ARRAY", items: { type: "STRING" } }
+                        }
+                    }
+                }
+            };
+
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+
+            if (!response.ok) throw new Error(`API Error: ${response.status} ${response.statusText}`);
+            const data = await response.json();
+            const extracted = JSON.parse(data.candidates[0].content.parts[0].text);
+            
+            // Clean references
+            if (extracted.references && Array.isArray(extracted.references)) {
+                extracted.references = extracted.references.map(ref => {
+                    return ref.replace(/(?:(?:Available|Accessed|Retrieved)(?: at| from)?:?|URL:|DOI:|arXiv:)?\s*\(?\[?(?:https?:\/\/|ftp:\/\/|www\.|doi\.org\/|doi:|arXiv:)[^\s\]\)]+\]?\)?[\.,]?\s*$/i, '').trim();
+                });
+            }
+            
+            // Validation
+            if (input.manualId && extracted.documentArxivId) {
+                 const cleanManual = input.manualId.toLowerCase().replace(/^arxiv:/, '').split('v')[0].trim();
+                 const cleanPdf = extracted.documentArxivId.toLowerCase().replace(/^arxiv:/, '').split('v')[0].trim();
+                 extracted.idMatchStatus = (cleanManual !== cleanPdf) ? 'MISMATCH' : 'MATCH';
+            } else if (input.manualId && !extracted.documentArxivId) {
+                extracted.idMatchStatus = 'NOT_FOUND_IN_DOC';
+            }
+
+            return extracted;
+        }
+
+        // --- XML GENERATION (Strict Elsevier/CAR 2.0) ---
+        const generateXML = (data) => {
+            if (!data) return '';
+            const timestamp = new Date().toISOString();
+            
+            let authorGroupsXML = '';
+            if (data.affiliations && data.affiliations.length > 0) {
+                authorGroupsXML = data.affiliations.map((aff, affIndex) => {
+                    const linkedAuthors = data.authors
+                        .map((a, i) => ({ ...a, globalSeq: i + 1 }))
+                        .filter(a => a.affiliationIndices && a.affiliationIndices.includes(affIndex));
+                    
+                    if (linkedAuthors.length === 0) return ''; 
+
+                    const authorsXml = linkedAuthors.map(author => `
+            <author seq="${author.globalSeq}"${author.orcid ? ` orcid="${author.orcid}"` : ''}${author.isCorresponding ? ' type="corresp"' : ''}>
+              <ce:initials>${author.initials || ''}</ce:initials>
+              <ce:surname>${author.surname}</ce:surname>
+              <ce:given-name>${author.firstName}</ce:given-name>${author.suffix ? `\n              <ce:suffix>${author.suffix}</ce:suffix>` : ''}${author.degree ? `\n              <ce:degrees>${author.degree}</ce:degrees>` : ''}${author.email ? `\n              <ce:e-address>${author.email}</ce:e-address>` : ''}
+            </author>`).join('');
+
+                    const orgsXml = aff.organizations && aff.organizations.length > 0 
+                        ? aff.organizations.map(o => `<organization>${o}</organization>`).join('\n              ')
+                        : `<organization>${aff.text.split(',')[0]}</organization>`;
+
+                    return `
+          <author-group seq="${affIndex + 1}">
+            ${authorsXml}
+            <affiliation>
+              ${orgsXml}
+              ${aff.addressPart ? `<address-part>${aff.addressPart}</address-part>` : ''}
+              ${aff.city ? `<city>${aff.city}</city>` : ''}
+              ${aff.state ? `<state>${aff.state}</state>` : ''}
+              ${aff.postalCode ? `<postal-code>${aff.postalCode}</postal-code>` : ''}
+              ${aff.countryCode ? `<country iso-code="${aff.countryCode}"/>` : (aff.country ? `<country>${aff.country}</country>` : '')}
+              <ce:source-text>${aff.text}</ce:source-text>
+            </affiliation>
+          </author-group>`;
+                }).join('');
+            }
+
+            const keywordsXML = data.keywords && data.keywords.length > 0 ? `
+            <author-keywords>
+              ${data.keywords.map(k => `<author-keyword>${k}</author-keyword>`).join('\n              ')}
+            </author-keywords>` : '';
+
+            // Generate Correspondence Block for XML
+            let correspondenceXML = '';
+            const correspAuthors = data.authors.filter(a => a.isCorresponding);
+            if (correspAuthors.length > 0) {
+                 correspondenceXML = correspAuthors.map(author => {
+                    // Try to find first linked affiliation for address details
+                    let affDetails = '';
+                    if (author.affiliationIndices && author.affiliationIndices.length > 0) {
+                        const aff = data.affiliations[author.affiliationIndices[0]];
+                        if(aff) {
+                            const orgs = aff.organizations && aff.organizations.length > 0 
+                                ? aff.organizations.map(o => `<organization>${o}</organization>`).join('\n              ')
+                                : `<organization>${aff.text ? aff.text.split(',')[0] : ''}</organization>`;
+                            
+                             affDetails = `
+            <affiliation>
+              ${orgs}
+              ${aff.addressPart ? `<address-part>${aff.addressPart}</address-part>` : ''}
+              ${aff.city ? `<city>${aff.city}</city>` : ''}
+              ${aff.state ? `<state>${aff.state}</state>` : ''}
+              ${aff.postalCode ? `<postal-code>${aff.postalCode}</postal-code>` : ''}
+              ${aff.countryCode ? `<country iso-code="${aff.countryCode}"/>` : (aff.country ? `<country>${aff.country}</country>` : '')}
+            </affiliation>`;
+                        }
+                    }
+
+                    return `
+          <correspondence>
+            <person>
+              <ce:initials>${author.initials}</ce:initials>
+              <ce:surname>${author.surname}</ce:surname>
+              <ce:given-name>${author.firstName}</ce:given-name>
+            </person>${affDetails}
+            ${author.email ? `<ce:e-address>${author.email}</ce:e-address>` : ''}
+          </correspondence>`;
+                 }).join('');
+            }
+
+            return `<?xml version='1.0' encoding='utf-8'?>
+<units xmlns="http://www.elsevier.com/xml/ani/ani" xmlns:ce="http://www.elsevier.com/xml/ani/common">
+  <unit type="ARTICLE">
+    <unit-info>
+      <unit-id>1</unit-id>
+      <order-id>unknown</order-id>
+      <parcel-id>none</parcel-id>
+      <supplier-id>4</supplier-id>
+      <timestamp>${timestamp}</timestamp>
+    </unit-info>
+    <unit-content>
+      <bibrecord>
+        <item-info>
+          <status state="new"/>
+          <itemidlist>
+            <itemid idtype="ARXIV">${data.arxivId || 'UNKNOWN'}</itemid>
+          </itemidlist>
+        </item-info>
+        <head>
+          <citation-info>
+            <citation-type code="ar"/>
+            <citation-language xml:lang="ENG"/>
+            <abstract-language xml:lang="ENG"/>
+            ${keywordsXML}
+          </citation-info>
+          <citation-title>
+            <titletext xml:lang="ENG" original="y">${data.title}</titletext>
+          </citation-title>
+          ${authorGroupsXML}
+          ${correspondenceXML}
+          <abstracts>
+            <abstract original="y" xml:lang="ENG">
+              <ce:para>${data.abstract}</ce:para>
+            </abstract>
+          </abstracts>
+          <source srcid="???"/>
+        </head>
+        <tail>
+          <bibliography refcount="${data.references ? data.references.length : 0}">
+            ${data.references ? data.references.map((ref, i) => `
+            <reference seq="${i + 1}">
+              <ref-info/>
+              <ref-fulltext>${ref}</ref-fulltext>
+              <ce:source-text>${ref}</ce:source-text>
+            </reference>`).join('') : ''}
+          </bibliography>
+        </tail>
+      </bibrecord>
+    </unit-content>
+  </unit>
+</units>`.trim();
+        };
+
+        // --- UI COMPONENTS ---
+
+        const Header = () => {
+            const matrixRef = useRef(null);
+            const cubeRef = useRef(null);
+            
+            useEffect(() => {
+                const matrix = matrixRef.current;
+                const letters = ['A', 'C', 'E', 'X', 'M', 'L', '0', '1'];
+                let mInt = null;
+                let cInt = null;
+                
+                const drop = () => {
+                    if(!matrix) return;
+                    const d = document.createElement('div');
+                    d.style.cssText = `position:absolute; color:#00d9ff; font-family:monospace; font-size:${Math.random()*10+14}px; left:${Math.random()*100}%; top:-50px; pointer-events:none; opacity:0.8;`;
+                    d.textContent = letters[Math.floor(Math.random()*letters.length)];
+                    matrix.appendChild(d);
+                    
+                    const anim = d.animate([
+                        {transform: 'translateY(-10vh)', opacity: 1},
+                        {transform: 'translateY(110vh)', opacity: 0}
+                    ], { duration: Math.random()*2000+1500 });
+                    
+                    anim.onfinish = () => d.remove();
+                };
+                
+                const cubes = cubeRef.current;
+                const cube = () => {
+                    if(!cubes) return;
+                    const c = document.createElement('div');
+                    const size = 10;
+                    const color = ['#00d9ff', '#ffffff', '#0099ff'][Math.floor(Math.random()*3)];
+                    c.style.cssText = `position:absolute; width:${size}px; height:${size}px; background:${color}; left:${Math.random()*window.innerWidth}px; top:${Math.random()*window.innerHeight}px; box-shadow:0 0 10px ${color}; opacity:0; pointer-events:none;`;
+                    cubes.appendChild(c);
+                    
+                    const anim = c.animate([
+                        {transform:'scale(1) rotate(0deg)', opacity:0, offset:0},
+                        {opacity:1, offset:0.1},
+                        {transform:'scale(0) rotate(720deg)', opacity:0, offset:1}
+                    ], {duration: 2000});
+                    
+                    anim.onfinish = () => c.remove();
+                };
+
+                mInt = setInterval(drop, 100);
+                cInt = setInterval(cube, 200);
+
+                return () => { clearInterval(mInt); clearInterval(cInt); };
+            }, []);
+
+            return html`
+                <div className="relative z-10 pt-8 pb-6 overflow-hidden bg-slate-900">
+                    <div ref=${matrixRef} className="absolute inset-0 w-full h-full opacity-30 pointer-events-none"></div>
+                    <div ref=${cubeRef} className="absolute inset-0 w-full h-full pointer-events-none"></div>
+                    <div className="relative z-20 flex flex-col items-center justify-center">
+                        <div className="relative w-20 h-20 mb-4">
+                            <div className="absolute inset-0 rounded-full border-2 border-white animate-[pulse_3s_infinite] opacity-50"></div>
+                            <div className="w-full h-full rounded-full border-2 border-white flex items-center justify-center bg-slate-900/80 backdrop-blur shadow-[0_0_15px_#00d9ff]">
+                                <span className="text-3xl font-orbitron font-bold text-white">A</span>
+                            </div>
+                        </div>
+                        <div className="text-center">
+                            <h1 className="text-3xl font-bold text-[#00d9ff] font-orbitron tracking-[0.3em] shadow-blue-glow">A C E</h1>
+                            <p className="text-white/60 text-[10px] font-orbitron uppercase tracking-[4px] mt-2">Apeiro Citation Extractor</p>
+                        </div>
+                        <div className="w-48 h-[1px] bg-gradient-to-r from-transparent via-[#00d9ff] to-transparent mt-4"></div>
+                    </div>
+                </div>
+            `;
+        };
+
+        const InputSection = ({ onAnalyze, isProcessing }) => {
+            const [mode, setMode] = useState('text');
+            const [text, setText] = useState('');
+            const [pdfId, setPdfId] = useState('');
+            const fileRef = useRef(null);
+
+            const run = () => {
+                if (mode === 'text') {
+                    onAnalyze({ type: 'text', content: text, manualId: pdfId });
+                } else if (fileRef.current?.files[0]) {
+                    const r = new FileReader();
+                    r.onload = () => onAnalyze({ type: 'pdf', content: r.result.split(',')[1], manualId: pdfId });
+                    r.readAsDataURL(fileRef.current.files[0]);
+                } else if (pdfId) {
+                    onAnalyze({ type: 'text', content: '', manualId: pdfId });
+                }
+            };
+
+            const handleKeyDown = (e) => {
+                if (e.key === 'Enter' && !isProcessing) run();
+            };
+
+            return html`
+                <div className="bg-white rounded-lg shadow-lg overflow-hidden flex flex-col h-full text-slate-800 border border-slate-200 z-20 relative">
+                    <div className="flex border-b border-slate-200">
+                        <button onClick=${() => setMode('text')} className=${`flex-1 py-3 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 ${mode==='text'?'bg-blue-50 text-blue-600 border-b-2 border-blue-600':'text-slate-500 hover:bg-slate-50'}`}>
+                            <${Icons.Type} className="w-4 h-4"/> Paste Text
+                        </button>
+                        <button onClick=${() => setMode('pdf')} className=${`flex-1 py-3 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 ${mode==='pdf'?'bg-blue-50 text-blue-600 border-b-2 border-blue-600':'text-slate-500 hover:bg-slate-50'}`}>
+                            <${Icons.FileText} className="w-4 h-4"/> Upload PDF
+                        </button>
+                    </div>
+                    <div className="p-4 flex-1 flex flex-col gap-4">
+                        <div>
+                            <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">ArXiv ID / Manual Override</label>
+                            <input value=${pdfId} onInput=${e => setPdfId(e.target.value)} onKeyDown=${handleKeyDown} placeholder="e.g. 2305.10111 (Press Enter)" className="w-full bg-slate-50 border border-slate-200 rounded p-2 text-sm outline-none focus:border-blue-400 transition font-mono" />
+                        </div>
+                        <div className="flex-1 border-2 border-dashed border-slate-200 rounded-lg bg-slate-50 relative overflow-hidden group">
+                            ${mode === 'text' 
+                                ? html`<textarea value=${text} onInput=${e => setText(e.target.value)} className="w-full h-full p-3 bg-transparent resize-none outline-none text-sm font-mono text-slate-600 placeholder-slate-400" placeholder="Paste paper text here, or leave empty to extract by ID only..."></textarea>`
+                                : html`<div onClick=${() => fileRef.current.click()} className="absolute inset-0 flex flex-col items-center justify-center cursor-pointer hover:bg-blue-50 transition text-slate-400 hover:text-blue-500 group-hover:scale-105 duration-300">
+                                    <input type="file" ref=${fileRef} className="hidden" accept="application/pdf" />
+                                    <${Icons.Upload} className="w-8 h-8 mb-2" />
+                                    <span className="text-xs font-bold">Click to Upload PDF</span>
+                                  </div>`
+                            }
+                        </div>
+                        <button onClick=${run} disabled=${isProcessing} className=${`w-full py-3 rounded font-bold text-white text-sm shadow transition flex items-center justify-center gap-2 ${isProcessing ? 'bg-slate-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 hover:shadow-lg transform active:scale-95'}`}>
+                            ${isProcessing ? html`<${Icons.RefreshCw} className="w-4 h-4 animate-spin"/> Processing...` : html`<${Icons.Sparkles} className="w-4 h-4"/> Extract Data`}
+                        </button>
+                    </div>
+                </div>
+            `;
+        };
+
+        const ResultsSection = ({ data }) => {
+            const [tab, setTab] = useState('visual');
+            const [xml, setXml] = useState('');
+
+            useEffect(() => {
+                if(data) setXml(generateXML(data));
+            }, [data]);
+
+            const dl = () => {
+                const b = new Blob([xml], {type:'text/xml'});
+                const u = URL.createObjectURL(b);
+                const a = document.createElement('a');
+                a.href = u; a.download = `ACE_${data.arxivId || 'extract'}.xml`;
+                a.click();
+            };
+
+            return html`
+                <div className="bg-white rounded-lg shadow-lg overflow-hidden flex flex-col h-full relative text-slate-800 border border-slate-200 z-20">
+                    <div className="bg-slate-50 border-b border-slate-200 p-3 flex justify-between items-center">
+                        <div className="flex bg-slate-200 rounded p-1 gap-1">
+                            <button onClick=${() => setTab('visual')} className=${`px-3 py-1 text-xs font-bold rounded ${tab==='visual'?'bg-white shadow text-blue-600':'text-slate-500'}`}>Visual</button>
+                            <button onClick=${() => setTab('xml')} className=${`px-3 py-1 text-xs font-bold rounded ${tab==='xml'?'bg-white shadow text-blue-600':'text-slate-500'}`}>XML Editor</button>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            ${data.idMatchStatus === 'MISMATCH' && html`<span className="text-[10px] font-bold bg-red-100 text-red-600 px-2 py-1 rounded border border-red-200">ID MISMATCH</span>`}
+                            <button onClick=${dl} className="text-slate-400 hover:text-blue-600 transition flex items-center gap-1 text-xs font-bold uppercase"><${Icons.Download} className="w-4 h-4" /> Save XML</button>
+                        </div>
+                    </div>
+                    <div className="flex-1 overflow-auto relative custom-scroll">
+                        ${tab === 'visual' 
+                            ? html`
+                                <div className="animate-fade-in space-y-6 p-6 bg-slate-50/50">
+                                    <div>
+                                        <div className="flex items-center gap-2 mb-2">
+                                            <span className="inline-block px-2 py-1 rounded bg-blue-100 text-blue-700 text-[10px] font-bold font-mono">ID: ${data.arxivId || 'N/A'}</span>
+                                            ${data.documentArxivId && html`<span className="inline-block px-2 py-1 rounded bg-slate-100 text-slate-500 text-[10px] font-bold font-mono">Doc ID: ${data.documentArxivId}</span>`}
+                                        </div>
+                                        <h2 className="text-xl font-bold text-slate-900 leading-snug">${data.title}</h2>
+                                        <div className="mt-3 flex flex-wrap gap-2">
+                                            ${data.authors.map(a => html`
+                                                <span className=${`text-xs px-2 py-1 border rounded flex items-center gap-1 ${a.isCorresponding ? 'bg-blue-50 border-blue-200' : 'bg-white border-slate-200'} text-slate-600`}>
+                                                    <span className="font-semibold">${a.surname}</span>, ${a.firstName}
+                                                    ${a.isCorresponding && html`<${Icons.Star} className="w-3 h-3 text-blue-500 fill-blue-500" />`}
+                                                    ${a.affiliationIndices && a.affiliationIndices.length > 0 && html`
+                                                        <span className="text-[9px] bg-slate-100 text-slate-500 px-1 rounded ml-1 border border-slate-200 font-mono">
+                                                            ${a.affiliationIndices.join(', ')}
+                                                        </span>
+                                                    `}
+                                                </span>
+                                            `)}
+                                        </div>
+                                    </div>
+                                    <div className="bg-white p-4 rounded border border-slate-200 text-sm text-slate-600 leading-relaxed shadow-sm text-justify">
+                                        <h4 className="text-xs font-bold text-slate-400 uppercase mb-2 flex items-center gap-2"><${Icons.FileText} className="w-3 h-3"/> Abstract</h4>
+                                        ${data.abstract}
+                                    </div>
+                                    <div>
+                                        <h4 className="text-xs font-bold text-slate-400 uppercase mb-2">References (${data.references ? data.references.length : 0})</h4>
+                                        <div className="text-[10px] text-slate-400 space-y-1 pl-2">
+                                            ${data.references && data.references.map((r,i) => html`<div className="mb-1 flex gap-2"><span className="text-slate-300 font-mono min-w-[20px]">${i+1}.</span><span>${r}</span></div>`)}
+                                        </div>
+                                    </div>
+                                </div>
+                              `
+                            : html`<textarea value=${xml} onInput=${e => setXml(e.target.value)} className="w-full h-full bg-[#1e1e1e] text-[#9cdcfe] font-mono text-xs p-4 resize-none outline-none shadow-inner leading-relaxed" spellCheck="false"></textarea>`
+                        }
+                    </div>
+                </div>
+            `;
+        };
+
+        const App = () => {
+            const [status, setStatus] = useState('IDLE');
+            const [data, setData] = useState(null);
+            const [error, setError] = useState(null);
+
+            const handleAnalyze = async (input) => {
+                setStatus('PROCESSING'); setError(null);
+                try {
+                    const res = await callGeminiDirect(input);
+                    setData(res);
+                    setStatus('SUCCESS');
+                } catch(e) {
+                    console.error(e);
+                    setError(e.message);
+                    setStatus('ERROR');
+                }
+            };
+
+            return html`
+                <${Header} />
+                <div className="flex-1 max-w-7xl mx-auto w-full p-4 grid grid-cols-1 lg:grid-cols-12 gap-6 overflow-hidden relative z-20">
+                    <div className="lg:col-span-5 h-full max-h-[calc(100vh-140px)]">
+                        <${InputSection} onAnalyze=${handleAnalyze} isProcessing=${status === 'PROCESSING'} />
+                    </div>
+                    <div className="lg:col-span-7 h-full max-h-[calc(100vh-140px)]">
+                        ${status === 'ERROR' && html`
+                            <div className="mb-4 bg-red-50 border border-red-200 text-red-600 p-3 rounded flex items-center gap-2 text-sm animate-fade-in shadow-sm">
+                                <${Icons.AlertCircle} className="w-4 h-4" /> 
+                                <span><strong>Error:</strong> ${error}</span>
+                            </div>
+                        `}
+                        ${data 
+                            ? html`<${ResultsSection} data=${data} />`
+                            : html`
+                                <div className="h-full bg-slate-800/50 border border-slate-700 rounded-lg flex flex-col items-center justify-center text-slate-500 text-center p-8 shadow-[inset_0_0_20px_rgba(0,0,0,0.5)]">
+                                    <div className="w-20 h-20 bg-slate-800 rounded-full flex items-center justify-center mb-6 shadow-lg ring-1 ring-slate-700">
+                                        <${Icons.Sparkles} className="w-10 h-10 text-slate-600" />
+                                    </div>
+                                    <p className="font-orbitron tracking-widest text-slate-400 text-lg">SYSTEM READY</p>
+                                    <p className="text-xs mt-2 max-w-xs opacity-60 leading-relaxed">
+                                        ACE - Apeiro Citation Extractor initialized.<br/>
+                                        Awaiting Document Input...
+                                    </p>
+                                </div>
+                            `
+                        }
+                    </div>
+                </div>
+            `;
+        };
+
+        try {
+            const root = ReactDOM.createRoot(document.getElementById('root'));
+            root.render(html`<${App} />`);
+        } catch (e) {
+            document.getElementById('root').innerHTML = `<div style="color:white; padding:20px;">App crashed: ${e.message}</div>`;
+        }
+    </script>
+</body>
+</html>
