@@ -1,7 +1,7 @@
 
-import React, { useRef, useState, useMemo, useEffect } from 'react';
+import React, { useRef, useState, useMemo, useCallback, useEffect } from 'react';
 import { Case, ParsingStatus } from '../types';
-import { Upload, FileText, CheckCircle, AlertTriangle, Play, Loader, FolderOpen, LayoutGrid, List as ListIcon, Activity, Search, FileDown, Edit3, Clock, PieChart, Trash2, RotateCcw } from 'lucide-react';
+import { Upload, FileText, CheckCircle, Play, Loader, FolderOpen, LayoutGrid, List as ListIcon, Activity, Search, FileDown, Edit3, Trash2, RotateCcw, PieChart, FileArchive } from 'lucide-react';
 import ReportingPanel from './ReportingPanel';
 
 interface DashboardProps {
@@ -174,20 +174,40 @@ const Dashboard: React.FC<DashboardProps> = ({ cases, onUpload, onSelectCase, on
   const [filter, setFilter] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [showReports, setShowReports] = useState(false);
+  
+  // Refs for both Folder and File uploads
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(true); };
   const handleDragLeave = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(false); };
+  
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault(); setIsDragging(false);
     const files = Array.from(e.dataTransfer.files).filter((f: any) => !f.name.startsWith('.')) as File[];
+    
+    // Limit to 50
+    if (files.length > 50) {
+        alert("Upload limited to 50 files at once.");
+        return;
+    }
+
     if (files.length > 0) onUpload(files);
   };
 
-  const handleFolderSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelection = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       const files = Array.from(e.target.files).filter((f: any) => !f.name.startsWith('.')) as File[];
+      
+      // Limit to 50
+      if (files.length > 50) {
+          alert("Upload limited to 50 files at once.");
+          e.target.value = '';
+          return;
+      }
+
       onUpload(files);
+      e.target.value = '';
     }
   };
 
@@ -200,21 +220,39 @@ const Dashboard: React.FC<DashboardProps> = ({ cases, onUpload, onSelectCase, on
       edited: cases.filter(c => c.isEdited).length
   }), [cases]);
 
-  // Overall Progress Calculation
   const progressPercent = stats.total > 0 ? Math.round(((stats.completed + stats.error) / stats.total) * 100) : 0;
-  
-  // Throughput Estimation
-  const throughput = activeProcessingCount > 0 ? (activeProcessingCount * 12) : 0; // Pages per min approx
+  const throughput = activeProcessingCount > 0 ? (activeProcessingCount * 12) : 0; 
 
   const filteredCases = cases.filter(c => c.name.toLowerCase().includes(filter.toLowerCase()));
-
-  // Determine if batch is 100% complete
   const isBatchComplete = cases.length > 0 && activeProcessingCount === 0 && (stats.completed + stats.error === stats.total);
 
   return (
     <div className="h-full flex flex-col p-6 overflow-hidden bg-[#0a0a0a]">
       {showReports && <ReportingPanel cases={cases} onClose={() => setShowReports(false)} />}
       
+      {/* Hidden Inputs */}
+      <input 
+            type="file" 
+            ref={(node) => {
+                folderInputRef.current = node;
+                if (node) {
+                    node.setAttribute("webkitdirectory", "");
+                    node.setAttribute("directory", "");
+                }
+            }}
+            onChange={handleFileSelection}
+            className="hidden"
+            multiple
+      />
+      <input 
+            type="file" 
+            ref={fileInputRef}
+            onChange={handleFileSelection}
+            className="hidden"
+            multiple
+            accept=".pdf,.html,.htm,.json,.txt,.zip,application/zip,application/x-zip-compressed,multipart/x-zip"
+      />
+
       {/* --- Analytics HUD --- */}
       <div className="grid grid-cols-12 gap-4 mb-6">
         
@@ -233,7 +271,7 @@ const Dashboard: React.FC<DashboardProps> = ({ cases, onUpload, onSelectCase, on
              </div>
              <div className="flex justify-between mt-1 text-[9px] text-slate-500 font-mono">
                  <span>{progressPercent}% Complete</span>
-                 <span>{stats.completed}/{stats.total} Files</span>
+                 <span className="font-bold text-slate-300">SESSION: {stats.total} FILES</span>
              </div>
         </div>
 
@@ -281,8 +319,9 @@ const Dashboard: React.FC<DashboardProps> = ({ cases, onUpload, onSelectCase, on
                  <button 
                      onClick={() => fileInputRef.current?.click()}
                      className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold border border-slate-700 hover:border-slate-500 transition-all flex items-center gap-2"
+                     title="Upload files or ZIP archives"
                  >
-                     <Upload className="w-3 h-3" /> Upload
+                     <Upload className="w-3 h-3" /> Files / ZIP Archive
                  </button>
                  <button 
                      onClick={onProcessAll}
@@ -359,20 +398,12 @@ const Dashboard: React.FC<DashboardProps> = ({ cases, onUpload, onSelectCase, on
           </div>
 
           <div className="flex gap-2">
-              <span className="text-xs text-slate-500 font-mono py-2">Total Capacity: 50+ Slots</span>
+              <span className="text-xs text-slate-500 font-mono py-2">Total Capacity: 50 Slots</span>
           </div>
       </div>
 
       {/* --- Main Grid/List Area --- */}
-      <input 
-            type="file" 
-            ref={fileInputRef}
-            onChange={handleFolderSelect}
-            className="hidden"
-            {...({ webkitdirectory: "", directory: "" } as any)}
-            multiple
-      />
-
+      
       {cases.length === 0 ? (
         <div 
             className={`flex-1 border-2 border-dashed rounded-2xl flex flex-col items-center justify-center transition-all duration-300 ${isDragging ? 'border-blue-500 bg-blue-500/10' : 'border-slate-800 bg-slate-900/30'}`}
@@ -385,16 +416,24 @@ const Dashboard: React.FC<DashboardProps> = ({ cases, onUpload, onSelectCase, on
             </div>
             <h2 className="text-3xl font-orbitron font-bold text-white mb-2 tracking-wide">ACE BULK UPLOAD</h2>
             <p className="text-slate-400 mb-8 max-w-md text-center text-sm">
-                Drag & Drop folder containing up to 50+ case files. 
+                Drag & Drop files, a folder, or a <span className="text-blue-400 font-bold">ZIP archive</span> (max 50 files).
                 <br/>Auto-detection of PDFs, HTML, JSON, and Scrape data.
             </p>
             
-            <button 
-                onClick={() => fileInputRef.current?.click()}
-                className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-8 py-3 rounded-lg font-bold transition-all shadow-lg hover:shadow-blue-500/20"
-            >
-                <FolderOpen className="w-5 h-5" /> Select Case Directory
-            </button>
+            <div className="flex gap-4">
+                <button 
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-8 py-3 rounded-lg font-bold transition-all shadow-lg hover:shadow-blue-500/20"
+                >
+                    <FileArchive className="w-5 h-5" /> Select ZIP / Files
+                </button>
+                <button 
+                    onClick={() => folderInputRef.current?.click()}
+                    className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 px-8 py-3 rounded-lg font-bold transition-all border border-slate-700"
+                >
+                    <FolderOpen className="w-5 h-5" /> Select Folder
+                </button>
+            </div>
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 pb-10">

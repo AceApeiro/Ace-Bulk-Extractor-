@@ -1,30 +1,92 @@
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+
+import React, { useState, useEffect, useRef } from 'react';
 import PdfViewer from './PdfViewer';
-import ResultsView from './ResultsView';
-import VerificationPanel from './VerificationPanel';
+import ResultsView, { generateXML } from './ResultsView';
 import QCChecklist from './QCChecklist';
-import InputArea from './InputArea';
+import AIAgent from './AIAgent';
 import { Case, ParsingStatus, ExtractedData } from '../types';
-import { ChevronLeft, AlertCircle, RotateCw, CheckSquare, FileText, SplitSquareHorizontal } from 'lucide-react';
+import { ChevronLeft, FileText, Target, Bot, Code, GripVertical, PanelLeftClose, PanelLeftOpen, LayoutTemplate, X, Clock, ZoomIn, ZoomOut } from 'lucide-react';
 
 interface CaseDetailProps {
   activeCase: Case;
   onBack: () => void;
   onAnalyze: (caseId: string, manualId?: string) => void;
   onUpdateCaseData: (caseId: string, data: ExtractedData) => void;
-  onFileUpdate?: (caseId: string, files: any) => void;
+  onFinalizeQC?: (caseId: string) => void;
 }
 
-const CaseDetail: React.FC<CaseDetailProps> = ({ activeCase, onBack, onAnalyze, onUpdateCaseData, onFileUpdate }) => {
+const CaseTimer = ({ startTime, qcStartTime }: { startTime?: number, qcStartTime?: number }) => {
+    const [elapsed, setElapsed] = useState(0);
+    const [qcElapsed, setQcElapsed] = useState(0);
+
+    useEffect(() => {
+        if(!startTime && !qcStartTime) return;
+        const update = () => {
+             const now = Date.now();
+             if(startTime) setElapsed(now - startTime);
+             if(qcStartTime) setQcElapsed(now - qcStartTime);
+        };
+        update(); 
+        const interval = setInterval(update, 1000);
+        return () => clearInterval(interval);
+    }, [startTime, qcStartTime]);
+    
+    const format = (ms: number) => {
+        const s = Math.floor(ms / 1000) % 60;
+        const m = Math.floor(ms / 60000);
+        const h = Math.floor(ms / 3600000);
+        return h > 0 ? `${h}h ${m}m` : `${m}m ${s}s`;
+    };
+    
+    return (
+        <div className="flex items-center gap-3 px-3 py-1 bg-slate-800 rounded-full border border-slate-700 ml-4">
+             {startTime && (
+                <div className="flex items-center gap-2 border-r border-slate-600 pr-3">
+                    <Clock className="w-3 h-3 text-slate-400" />
+                    <span className="font-mono text-xs text-slate-300 font-bold">Total: {format(elapsed)}</span>
+                </div>
+             )}
+             {qcStartTime && (
+                 <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                    <span className="font-mono text-xs text-green-400 font-bold">QC: {format(qcElapsed)}</span>
+                 </div>
+             )}
+        </div>
+    );
+};
+
+const CaseDetail: React.FC<CaseDetailProps> = ({ activeCase, onBack, onAnalyze, onUpdateCaseData, onFinalizeQC }) => {
   const [highlightedText, setHighlightedText] = useState<string | null>(null);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'editor' | 'qc'>('editor');
+  const [viewMode, setViewMode] = useState<'editor' | 'precision'>('editor');
   const [fileContents, setFileContents] = useState<{api: string|null, html: string|null, scrape: string|null}>({api:null, html:null, scrape:null});
+  
+  // Resizable Columns State (Percentages) - Expanded default width for Editor
+  const [leftColWidth, setLeftColWidth] = useState(35);
+  const [middleColWidth, setMiddleColWidth] = useState(25);
+  
+  // Column Visibility State
+  const [showLeftCol, setShowLeftCol] = useState(true);
+  const [showMiddleCol, setShowMiddleCol] = useState(true);
+  
+  // XML View State
+  const [xmlFontSize, setXmlFontSize] = useState(11);
 
-  const currentPdfFileRef = useRef<File | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const isDraggingLeft = useRef(false);
+  const isDraggingMiddle = useRef(false);
+  
+  // XML Preview State
+  const [generatedXml, setGeneratedXml] = useState('');
+  const xmlTextAreaRef = useRef<HTMLTextAreaElement>(null);
+  
+  const [isAgentOpen, setIsAgentOpen] = useState(false);
 
-  // Read text file helper
+  // Store object URL to cleanup later
+  const objectUrlRef = useRef<string | null>(null);
+
   const readFileAsText = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -34,21 +96,21 @@ const CaseDetail: React.FC<CaseDetailProps> = ({ activeCase, onBack, onAnalyze, 
     });
   };
 
-  // Initialize view when activeCase changes
   useEffect(() => {
     const initView = async () => {
-        // 1. Setup PDF URL
-        if (activeCase.files.pdf && activeCase.files.pdf !== currentPdfFileRef.current) {
-            currentPdfFileRef.current = activeCase.files.pdf;
-            const blob = activeCase.files.pdf.slice(0, activeCase.files.pdf.size, 'application/pdf');
+        // Handle PDF Blob URL
+        if (activeCase.files.pdf) {
+            // Revoke old if exists
+            if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+            
+            const blob = new Blob([activeCase.files.pdf], { type: 'application/pdf' });
             const url = URL.createObjectURL(blob);
-            setPdfUrl(prev => {
-                if (prev) URL.revokeObjectURL(prev);
-                return url;
-            });
+            objectUrlRef.current = url;
+            setPdfUrl(url);
+        } else {
+            setPdfUrl(null);
         }
 
-        // 2. Read aux files
         const [apiText, htmlText, scrapeText] = await Promise.all([
             activeCase.files.api ? readFileAsText(activeCase.files.api) : Promise.resolve(null),
             activeCase.files.html ? readFileAsText(activeCase.files.html) : Promise.resolve(null),
@@ -59,131 +121,352 @@ const CaseDetail: React.FC<CaseDetailProps> = ({ activeCase, onBack, onAnalyze, 
     };
 
     initView();
+
+    // Cleanup function
+    return () => {
+        if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+    };
   }, [activeCase]);
 
-  // Handle re-processing request
-  const handleReprocess = () => {
-    onAnalyze(activeCase.id, activeCase.manualId);
-  };
-  
-  // Handle data updates from editor
+  useEffect(() => {
+    if (activeCase.extractedData) {
+        setGeneratedXml(generateXML(activeCase.extractedData));
+    }
+  }, [activeCase.extractedData]);
+
   const handleDataUpdate = (newData: ExtractedData) => {
       onUpdateCaseData(activeCase.id, newData);
   };
 
+  const handleEditorFocus = (field: string) => {
+      if (!xmlTextAreaRef.current || !generatedXml) return;
+      
+      let searchRegex: RegExp | null = null;
+      let startTagLength = 0;
+
+      // Map fields to specific XML tags
+      switch(field) {
+          case 'title': 
+            searchRegex = /<titletext[^>]*>(.*?)<\/titletext>/s; 
+            break;
+          case 'abstract': 
+            searchRegex = /<abstract[^>]*>[\s\S]*?<ce:para>(.*?)<\/ce:para>[\s\S]*?<\/abstract>/s;
+            break;
+          case 'authors': 
+          case 'affiliations':
+            searchRegex = /<author-group[^>]*>/s;
+            startTagLength = 14; 
+            break;
+          case 'keyword':
+             searchRegex = /<author-keywords>/s;
+             startTagLength = 17;
+             break;
+          case 'references':
+             searchRegex = /<bibliography[^>]*>/s;
+             startTagLength = 14;
+             break;
+          default: 
+            return;
+      }
+
+      if (searchRegex) {
+          const match = generatedXml.match(searchRegex);
+          if (match && match.index !== undefined) {
+              const textarea = xmlTextAreaRef.current;
+              textarea.focus();
+              
+              const startPos = match.index;
+              const endPos = startPos + match[0].length;
+              
+              textarea.setSelectionRange(startPos, endPos);
+              
+              // Scroll to selection
+              const fullText = textarea.value;
+              const linesBefore = fullText.substring(0, startPos).split('\n').length;
+              const lineHeight = 16 * (xmlFontSize/11); // Approximate line height based on font size
+              textarea.scrollTop = (linesBefore - 3) * lineHeight; 
+          }
+      }
+  };
+  
+  const handleMouseDownLeft = () => { isDraggingLeft.current = true; };
+  const handleMouseDownMiddle = () => { isDraggingMiddle.current = true; };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+      if (!containerRef.current) return;
+      const containerWidth = containerRef.current.clientWidth;
+      const currentMousePerc = (e.clientX / containerWidth) * 100;
+      
+      if (isDraggingLeft.current && showLeftCol) {
+          // Left column resize
+          const newWidth = currentMousePerc;
+          if (newWidth > 15 && newWidth < 80) setLeftColWidth(newWidth);
+      }
+      
+      if (isDraggingMiddle.current && showMiddleCol) {
+          // Middle column resize
+          // If left column is hidden, the mouse position corresponds directly to middle column width
+          // If left column is shown, we subtract left column width
+          let newMiddleWidth = currentMousePerc;
+          if (showLeftCol) {
+              newMiddleWidth = currentMousePerc - leftColWidth;
+          }
+          
+          // Constrain total width
+          const totalUsed = (showLeftCol ? leftColWidth : 0) + newMiddleWidth;
+          
+          if (newMiddleWidth > 10 && totalUsed < 95) {
+              setMiddleColWidth(newMiddleWidth);
+          }
+      }
+  };
+
+  const handleMouseUp = () => {
+      isDraggingLeft.current = false;
+      isDraggingMiddle.current = false;
+  };
+
+
+  if (viewMode === 'precision') {
+      return (
+        <div className="h-full flex flex-col bg-[#050505]">
+             {/* Precision Header */}
+             <div className="h-14 border-b border-slate-800 bg-slate-900/50 flex items-center px-4 justify-between shrink-0 backdrop-blur-sm">
+                <div className="flex items-center gap-4">
+                    <button onClick={() => setViewMode('editor')} className="flex items-center text-slate-400 hover:text-white transition-colors text-xs font-bold uppercase tracking-wide bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700 hover:bg-slate-700">
+                        <ChevronLeft className="w-4 h-4 mr-1"/> Back to Editor
+                    </button>
+                    <CaseTimer startTime={activeCase.startTime} qcStartTime={activeCase.qcStartTime} />
+                    <div className="text-white font-orbitron font-bold tracking-wider text-sm bg-purple-900/20 px-4 py-1.5 rounded-full border border-purple-500/30 text-purple-300 flex items-center gap-2 ml-4">
+                        <Target className="w-4 h-4"/> PRECISION & QC PROTOCOLS
+                    </div>
+                </div>
+             </div>
+             
+             <div className="flex-1 overflow-hidden">
+                 <QCChecklist 
+                    data={activeCase.extractedData!} 
+                    files={activeCase.files}
+                    onComplete={() => {
+                        setViewMode('editor');
+                        if (onFinalizeQC) onFinalizeQC(activeCase.id);
+                    }}
+                    onToggleAgent={() => setIsAgentOpen(!isAgentOpen)}
+                    isAgentOpen={isAgentOpen}
+                 />
+             </div>
+             <AIAgent 
+                isOpen={isAgentOpen} 
+                onClose={() => setIsAgentOpen(false)} 
+                extractedData={activeCase.extractedData}
+             />
+        </div>
+      );
+  }
+
   return (
-    <div className="h-full flex flex-col bg-[#0a0a0a] overflow-hidden">
+    <div 
+        className="h-full flex flex-col bg-[#050505] overflow-hidden" 
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+    >
         {/* Navigation Bar */}
-        <div className="h-12 border-b border-slate-800 bg-slate-900/50 flex items-center px-4 justify-between shrink-0">
+        <div className="h-10 border-b border-slate-800 bg-slate-900/80 flex items-center px-4 justify-between shrink-0 backdrop-blur-md z-30 select-none">
             <div className="flex items-center gap-4">
-                <button 
-                    onClick={onBack}
-                    className="flex items-center text-slate-400 hover:text-white transition-colors text-sm font-bold uppercase tracking-wide"
-                >
-                    <ChevronLeft className="w-4 h-4 mr-1"/> Back
+                <button onClick={onBack} className="flex items-center text-slate-400 hover:text-white transition-colors text-xs font-bold uppercase tracking-wide hover:bg-slate-800 px-3 py-1 rounded-lg">
+                    <ChevronLeft className="w-4 h-4 mr-1"/> Dashboard
                 </button>
-                <div className="h-4 w-[1px] bg-slate-700"></div>
+                <div className="h-4 w-[1px] bg-slate-700/50"></div>
                 
-                {/* View Switcher */}
-                <div className="flex bg-slate-800 rounded p-0.5">
+                <div className="flex bg-slate-800 rounded-lg p-0.5 border border-slate-700/50">
                     <button 
                         onClick={() => setViewMode('editor')}
-                        className={`px-3 py-1 text-xs font-bold rounded flex items-center gap-1.5 transition-all ${viewMode === 'editor' ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+                        className="px-3 py-0.5 text-[10px] font-bold rounded-md flex items-center gap-2 transition-all bg-cyan-600 text-white shadow-lg shadow-cyan-900/20"
                     >
                         <FileText className="w-3 h-3" /> Editor
                     </button>
                     <button 
-                        onClick={() => setViewMode('qc')}
-                        className={`px-3 py-1 text-xs font-bold rounded flex items-center gap-1.5 transition-all ${viewMode === 'qc' ? 'bg-green-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+                        onClick={() => setViewMode('precision')}
+                        disabled={!activeCase.extractedData}
+                        className="px-3 py-0.5 text-[10px] font-bold rounded-md flex items-center gap-2 transition-all text-slate-400 hover:text-purple-300 disabled:opacity-50"
                     >
-                        <CheckSquare className="w-3 h-3" /> QC Checklist
+                        <Target className="w-3 h-3" /> Precision
                     </button>
                 </div>
-            </div>
 
-            <div className="flex items-center gap-4">
-                <span className="text-slate-500 text-xs font-mono hidden md:inline">{activeCase.name}</span>
-                <span className={`text-xs px-2 py-0.5 rounded border ${
-                    activeCase.status === ParsingStatus.SUCCESS ? 'bg-green-900/20 text-green-400 border-green-800' :
-                    activeCase.status === ParsingStatus.ERROR ? 'bg-red-900/20 text-red-400 border-red-800' :
-                    activeCase.status === ParsingStatus.PROCESSING ? 'bg-blue-900/20 text-blue-400 border-blue-800 animate-pulse' :
-                    'bg-slate-800 text-slate-400 border-slate-700'
-                }`}>
-                    {ParsingStatus[activeCase.status]}
-                </span>
+                <CaseTimer startTime={activeCase.startTime} qcStartTime={activeCase.qcStartTime} />
+
+                {/* Column Toggles */}
+                <div className="flex items-center gap-1 ml-2 border-l border-slate-700 pl-3">
+                    <button 
+                        onClick={() => setShowLeftCol(!showLeftCol)}
+                        className={`p-1.5 rounded hover:bg-slate-700 transition-colors ${!showLeftCol ? 'text-slate-500' : 'text-cyan-400 bg-cyan-950/30'}`}
+                        title={showLeftCol ? "Hide Editor Panel" : "Show Editor Panel"}
+                    >
+                        {showLeftCol ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeftOpen className="w-4 h-4" />}
+                    </button>
+                    <button 
+                        onClick={() => setShowMiddleCol(!showMiddleCol)}
+                        className={`p-1.5 rounded hover:bg-slate-700 transition-colors ${!showMiddleCol ? 'text-slate-500' : 'text-purple-400 bg-purple-950/30'}`}
+                        title={showMiddleCol ? "Hide XML Panel" : "Show XML Panel"}
+                    >
+                        <Code className="w-4 h-4" />
+                    </button>
+                    <div className="h-4 w-[1px] bg-slate-700 mx-1"></div>
+                    <span className="text-[9px] font-bold text-slate-500 uppercase flex items-center gap-1">
+                        <LayoutTemplate className="w-3 h-3"/> Layout
+                    </span>
+                </div>
             </div>
         </div>
 
-        {/* Main Content Area */}
-        <div className="flex-grow p-4 overflow-hidden relative z-10 flex flex-col min-h-0">
-             {activeCase.error && (
-                <div className="mb-2 bg-red-50/90 border border-red-200 rounded p-2 flex items-center text-red-700 text-xs shadow-lg backdrop-blur shrink-0">
-                    <AlertCircle className="w-4 h-4 mr-2" />
-                    <p className="font-medium truncate">{activeCase.error}</p>
-                </div>
+        {/* 3-Column Resizable Layout */}
+        <div className="flex-grow flex overflow-hidden relative z-10" ref={containerRef}>
+             
+             {/* COL 1: Extraction Editor */}
+             {showLeftCol && (
+                 <>
+                    <div 
+                        style={{ width: `${leftColWidth}%` }}
+                        className="min-w-[300px] bg-[#050505] flex flex-col overflow-hidden relative shadow-xl z-10"
+                    >
+                        {activeCase.extractedData ? (
+                            <ResultsView 
+                                data={activeCase.extractedData} 
+                                onDataUpdate={handleDataUpdate} 
+                                onHighlight={setHighlightedText}
+                                onFocusField={handleEditorFocus}
+                                onClose={() => setShowLeftCol(false)}
+                            />
+                        ) : (
+                            <div className="flex flex-col items-center justify-center h-full text-slate-500 gap-4">
+                                <div className="w-16 h-16 rounded-full border-2 border-slate-800 flex items-center justify-center animate-pulse">
+                                    <Bot className="w-8 h-8 text-slate-700" />
+                                </div>
+                                <p className="font-mono text-sm">{activeCase.status === ParsingStatus.PROCESSING ? 'ACE AI Extraction In Progress...' : 'Awaiting Extraction Command...'}</p>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Resizer 1 - VISUAL SPACER */}
+                    <div 
+                        onMouseDown={handleMouseDownLeft}
+                        className="w-4 -ml-2 cursor-col-resize z-20 flex items-center justify-center group h-full transition-all relative"
+                    >
+                        <div className="w-[1px] h-full bg-slate-800 group-hover:bg-cyan-500 group-hover:w-[2px] transition-all"></div>
+                        <div className="absolute top-1/2 -translate-y-1/2 w-6 h-12 bg-slate-800 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity border border-slate-600 shadow-xl">
+                            <GripVertical className="w-4 h-4 text-cyan-400" />
+                        </div>
+                    </div>
+                 </>
              )}
 
-             <div className="grid grid-cols-12 gap-4 h-full min-h-0 transition-all duration-300">
-                {/* PDF Viewer Pane */}
-                <div className="h-full min-h-0 flex flex-col transition-all duration-300 col-span-12 lg:col-span-6">
-                    <PdfViewer 
-                        pdfUrl={pdfUrl}
-                        apiContent={fileContents.api}
-                        htmlContent={fileContents.html}
-                        scrapeContent={fileContents.scrape}
-                        highlightText={highlightedText}
-                        extractedText={activeCase.extractedData?.documentText}
-                    />
-                </div>
-
-                {/* Results / Processing Pane */}
-                <div className="h-full flex flex-col min-h-0 transition-all duration-300 col-span-12 lg:col-span-6">
-                    {activeCase.extractedData ? (
-                        <div className="h-full flex flex-col bg-white/95 backdrop-blur rounded-xl shadow-[0_0_20px_rgba(0,217,255,0.2)] border border-[#00d9ff]/30 overflow-hidden">
-                            <div className="p-0 border-b border-slate-100 bg-slate-50/50 flex-shrink-0">
-                                <VerificationPanel result={activeCase.extractedData.verification} />
-                            </div>
-                            
-                            <div className="flex-grow overflow-hidden relative">
-                                {viewMode === 'editor' ? (
-                                    <ResultsView 
-                                        data={activeCase.extractedData} 
-                                        onDataUpdate={handleDataUpdate} 
-                                        onHighlight={setHighlightedText}
-                                    />
-                                ) : (
-                                    <QCChecklist onComplete={() => setViewMode('editor')} />
-                                )}
-                            </div>
-                        </div>
-                    ) : (
-                        <div className="h-full flex flex-col items-center justify-center bg-white/5 backdrop-blur rounded-xl border border-slate-700 shadow-inner text-center p-8">
-                             {activeCase.status === ParsingStatus.PROCESSING ? (
-                                 <div className="flex flex-col items-center">
-                                     <div className="w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-                                     <h3 className="text-xl font-orbitron text-white animate-pulse">Processing Case...</h3>
-                                     <p className="text-slate-400 mt-2 text-sm">Extracting metadata via Gemini 1.5 Flash</p>
-                                 </div>
-                             ) : (
-                                 <div className="flex flex-col items-center">
-                                     <div className="w-16 h-16 bg-slate-800 rounded-full flex items-center justify-center mb-4 border border-slate-700">
-                                         <AlertCircle className="w-8 h-8 text-slate-500" />
-                                     </div>
-                                     <h3 className="text-lg font-medium text-slate-200 mb-2 font-orbitron">Ready to Process</h3>
-                                     <p className="text-sm text-slate-500 max-w-xs mb-6">Review the source files on the left, then start extraction.</p>
-                                     <button 
-                                        onClick={handleReprocess}
-                                        className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-lg font-bold transition-all shadow-[0_0_15px_rgba(37,99,235,0.3)]"
+             {/* COL 2: Generated XML */}
+             {showMiddleCol && (
+                 <>
+                    <div 
+                        style={{ width: `${middleColWidth}%` }}
+                        className="min-w-[200px] bg-[#0a0a0a] flex flex-col"
+                    >
+                        <div className="p-2 border-b border-slate-800 bg-slate-900 flex justify-between items-center shrink-0">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                                <Code className="w-3 h-3"/> Generated XML
+                            </span>
+                            <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-1 bg-slate-800 rounded px-1 border border-slate-700 mr-1">
+                                    <button 
+                                        onClick={() => setXmlFontSize(prev => Math.max(8, prev - 1))}
+                                        className="p-1 hover:text-white text-slate-400 transition-colors"
+                                        title="Zoom Out"
                                     >
-                                        <RotateCw className="w-4 h-4" /> Run Extraction
+                                        <ZoomOut className="w-3 h-3"/>
                                     </button>
-                                 </div>
-                             )}
+                                    <span className="text-[9px] font-mono w-4 text-center text-slate-500">{xmlFontSize}</span>
+                                    <button 
+                                        onClick={() => setXmlFontSize(prev => Math.min(24, prev + 1))}
+                                        className="p-1 hover:text-white text-slate-400 transition-colors"
+                                        title="Zoom In"
+                                    >
+                                        <ZoomIn className="w-3 h-3"/>
+                                    </button>
+                                </div>
+                                <button 
+                                    onClick={() => {
+                                        const blob = new Blob([generatedXml], { type: 'text/xml' });
+                                        const url = window.URL.createObjectURL(blob);
+                                        const link = document.createElement('a');
+                                        link.href = url;
+                                        link.download = `ACE_${activeCase.name}.xml`;
+                                        link.click();
+                                    }}
+                                    className="text-[9px] bg-slate-800 px-2 py-0.5 rounded border border-slate-700 hover:bg-slate-700 text-slate-300"
+                                >
+                                    Save
+                                </button>
+                                <button 
+                                    onClick={() => setShowMiddleCol(false)}
+                                    className="p-1 hover:bg-red-900/30 text-slate-500 hover:text-red-400 rounded-lg transition-colors"
+                                >
+                                    <X className="w-4 h-4"/>
+                                </button>
+                            </div>
                         </div>
-                    )}
-                </div>
+                        <div className="flex-1 relative group">
+                            <textarea 
+                                ref={xmlTextAreaRef}
+                                value={generatedXml}
+                                onChange={(e) => setGeneratedXml(e.target.value)}
+                                className="w-full h-full bg-[#0d1117] text-[#e6edf3] font-mono p-3 resize-none focus:outline-none custom-scrollbar leading-relaxed selection:bg-blue-900"
+                                style={{ fontSize: `${xmlFontSize}px` }}
+                                spellCheck={false}
+                            />
+                            <div className="absolute top-2 right-4 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-800/80 px-2 py-1 rounded text-[9px] text-slate-400 pointer-events-none">
+                                EDITABLE
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Resizer 2 - VISUAL SPACER */}
+                    <div 
+                        onMouseDown={handleMouseDownMiddle}
+                        className="w-4 -ml-2 cursor-col-resize z-20 flex items-center justify-center group h-full transition-all relative"
+                    >
+                        <div className="w-[1px] h-full bg-slate-800 group-hover:bg-cyan-500 group-hover:w-[2px] transition-all"></div>
+                        <div className="absolute top-1/2 -translate-y-1/2 w-6 h-12 bg-slate-800 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity border border-slate-600 shadow-xl">
+                            <GripVertical className="w-4 h-4 text-cyan-400" />
+                        </div>
+                    </div>
+                 </>
+             )}
+
+             {/* COL 3: PDF Viewer (Rest) */}
+             <div className="flex-1 min-w-[300px] bg-[#02040a] flex flex-col overflow-hidden relative">
+                 <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+                     <div className="h-full relative">
+                        <div className="absolute top-2 right-2 z-10 bg-black/60 backdrop-blur px-2 py-1 rounded text-[10px] font-bold text-cyan-400 border border-cyan-900 uppercase pointer-events-none">Primary Source (PDF)</div>
+                        <PdfViewer 
+                            pdfUrl={pdfUrl}
+                            apiContent={fileContents.api}
+                            htmlContent={fileContents.html}
+                            scrapeContent={fileContents.scrape}
+                            highlightText={highlightedText}
+                            extractedText={activeCase.extractedData?.documentText}
+                            onToggleAgent={() => setIsAgentOpen(!isAgentOpen)}
+                            isAgentOpen={isAgentOpen}
+                        />
+                     </div>
+                 </div>
              </div>
+
         </div>
+
+        {/* Floating AI Agent */}
+        <AIAgent 
+            isOpen={isAgentOpen} 
+            onClose={() => setIsAgentOpen(false)} 
+            extractedData={activeCase.extractedData}
+        />
     </div>
   );
 };

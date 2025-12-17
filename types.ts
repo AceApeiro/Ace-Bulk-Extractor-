@@ -1,4 +1,5 @@
 
+
 export interface Author {
   firstName: string;
   surname: string;
@@ -10,6 +11,7 @@ export interface Author {
   orcid?: string;
   isCorresponding?: boolean; // If marked with * or envelope or text
   role?: string; // e.g. Collaboration, Committee
+  alias?: string;
 }
 
 export interface Affiliation {
@@ -25,29 +27,35 @@ export interface Affiliation {
 }
 
 export interface Reference {
-  text: string;
-  fullText: string;
+  text: string; // The original source text (e.g., "_______, et al.")
+  fullText: string; // The resolved text (e.g., "Smith, J., et al.")
 }
 
 export interface VerificationResult {
-  status: 'SUCCESS' | 'SUMMARY_MISMATCHED' | 'VERSION_MISMATCHED' | 'MATCH_BY_TITLE';
+  status: 'SUCCESS' | 'SUMMARY_MISMATCHED' | 'VERSION_MISMATCHED' | 'MATCH_BY_TITLE' | 'AUTHOR_MISMATCH' | 'CHECK_REQUIRED';
   message: string;
   idComparison: {
     pdfId?: string;
+    pdfVersion?: string;
     htmlId?: string;
+    htmlVersion?: string;
     scrapeId?: string;
+    scrapeVersion?: string;
     apiId?: string;
+    apiVersion?: string;
+    versionMatch: boolean; // True if v1=v1 etc
   };
   titleComparison: {
     pdfTitle?: string;
     htmlTitle?: string;
     match: boolean;
+    sourceUsed: 'HTML' | 'PDF';
   };
-  authorComparison?: {
+  authorComparison: {
     match: boolean;
-    details: string;
-    pdfAuthorsSource?: string; // Names found in PDF
-    apiAuthorsSource?: string; // Names found in API
+    details: string; // e.g. "Scenario 2: API Expands Initial"
+    pdfCount: number;
+    apiCount: number;
   };
 }
 
@@ -64,7 +72,7 @@ export interface ExtractedData {
   authors: Author[];
   affiliations: Affiliation[];
   abstract: string;
-  references: string[]; // Full reference strings
+  references: Reference[]; // Updated to use Reference objects
   correspondence?: {
     emails: string[];
     addresses: string[]; // Indices or text
@@ -103,9 +111,39 @@ export interface Case {
   files: CaseFiles;
   extractedData: ExtractedData | null;
   error?: string;
-  processingTime?: number; // ms duration
-  startTime?: number; // Timestamp
-  endTime?: number; // Timestamp
+  
+  // Timings
+  startTime?: number; // Timestamp extraction started
+  endTime?: number; // Timestamp extraction finished
+  processingTime?: number; // Duration of AI extraction (ms)
+  
+  // QC Timings
+  qcStartTime?: number; // Timestamp user started reviewing (usually same as endTime)
+  qcEndTime?: number; // Timestamp user clicked Finalize/Download
+  qcDuration?: number; // Duration of manual review
+  
   isEdited?: boolean; // Track if user manually saved changes
   manualId?: string;
+}
+
+export interface HistoricalSession {
+    sessionId: string;
+    date: string;
+    cases: Case[];
+    stats: {
+        total: number;
+        completed: number;
+        avgDuration: number;
+    }
+}
+
+// --- USER MANAGEMENT ---
+
+export type UserRole = 'ADMIN' | 'OPERATOR';
+
+export interface User {
+  id: string;
+  username: string;
+  role: UserRole;
+  avatar?: string;
 }

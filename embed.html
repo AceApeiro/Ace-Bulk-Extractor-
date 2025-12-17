@@ -74,7 +74,22 @@
                - If Manual ID provided, use it.
                - Extract ID from document text into 'documentArxivId'.
             
-            2. **AUTHORS**:
+            2. **TITLE EXTRACTION**:
+               - **Source Authority**:
+                 - Generally, **HTML Summary (Landing Page)** is the authority for text content, punctuation, and hyphens.
+                 - **EXCEPTION**: If HTML contains LaTeX formatting delimiters (e.g., "$/5 x 5 -$" or "$z > 6$") used purely for bold/italics/math styling, and the PDF title is cleaner (e.g., "5 x 5 -GRADED"), treat this as a formatting artifact, NOT a content mismatch. In this specific case, **prefer the PDF Title**.
+               - **Mismatch Handling**:
+                 - Strict check on punctuation: "differential - scope" vs "differential - - scope" -> Use HTML.
+                 - Formatting check: "$\mu$" vs "μ" -> Use HTML/Unicode.
+               - **Cleaning & Replacements**:
+                 - **Remove**: 'Preprint', 'arXiv', leading/trailing superscripts/subscripts/symbols (e.g., *, †, ‡) that are not part of the meaning.
+                 - **Keep**: Punctuation (? ! :), essential chemical formulas (H2O).
+                 - **Replacements**:
+                   - Complex Equations -> "(Formula presented)"
+                   - Figures in title -> "(Figure presented)"
+                   - Tables in title -> "(Table presented)"
+
+            3. **AUTHORS**:
                - Extract Given Name, Surname, Initials.
                - Affiliations: Match superscripts (1, a, *) to affiliation list indices.
                - If multiple markers (e.g. 1,2), capture ALL indices.
@@ -85,15 +100,18 @@
                  - "Address correspondence to"
                  - Or if marked by symbols (e.g., *, envelope ✉, †) that are explicitly defined in the footnotes as indicating correspondence.
 
-            3. **AFFILIATIONS**:
+            4. **AFFILIATIONS**:
                - Break down into: Organizations (Array), AddressPart, City, State (US/CA/AU only), PostalCode.
                - **CountryCode**: MANDATORY. Use 3-letter ISO 3166-1 alpha-3 code (e.g. USA, GBR, DEU, TWN, HKG).
 
-            4. **REFERENCES**:
-               - Extract ALL.
-               - Remove trailing URLs/DOIs.
+            5. **REFERENCES**:
+               - **Protocol**: Capture BOTH 'text' (raw source) and 'fullText' (resolved).
+               - **Structure**: Output must be an array of objects { text, fullText }.
+               - **Splitting**: Split multiple references in one line (e.g., "ibid" usage or separated citations).
+               - **Resolution**: If ref starts with "______" or "Ibid", resolve the fullText using previous reference data.
+               - **Cleaning**: Remove superscript markers/numbers at the start. Remove trailing URLs/DOIs.
 
-            5. **XML**:
+            6. **XML**:
                - Ensure structure supports 'bibrecord', 'head', 'citation-info'.
             `;
 
@@ -162,7 +180,17 @@
                                 }
                             },
                             abstract: { type: "STRING" },
-                            references: { type: "ARRAY", items: { type: "STRING" } }
+                            references: { 
+                                type: "ARRAY", 
+                                items: { 
+                                    type: "OBJECT",
+                                    properties: {
+                                        text: { type: "STRING" },
+                                        fullText: { type: "STRING" }
+                                    },
+                                    required: ["text", "fullText"]
+                                } 
+                            }
                         }
                     }
                 }
@@ -177,13 +205,6 @@
             if (!response.ok) throw new Error(`API Error: ${response.status} ${response.statusText}`);
             const data = await response.json();
             const extracted = JSON.parse(data.candidates[0].content.parts[0].text);
-            
-            // Clean references
-            if (extracted.references && Array.isArray(extracted.references)) {
-                extracted.references = extracted.references.map(ref => {
-                    return ref.replace(/(?:(?:Available|Accessed|Retrieved)(?: at| from)?:?|URL:|DOI:|arXiv:)?\s*\(?\[?(?:https?:\/\/|ftp:\/\/|www\.|doi\.org\/|doi:|arXiv:)[^\s\]\)]+\]?\)?[\.,]?\s*$/i, '').trim();
-                });
-            }
             
             // Validation
             if (input.manualId && extracted.documentArxivId) {
@@ -202,20 +223,25 @@
             if (!data) return '';
             const timestamp = new Date().toISOString();
             
+            // Track processed authors
+            const processedAuthorIndices = new Set();
+
             let authorGroupsXML = '';
             if (data.affiliations && data.affiliations.length > 0) {
                 authorGroupsXML = data.affiliations.map((aff, affIndex) => {
                     const linkedAuthors = data.authors
-                        .map((a, i) => ({ ...a, globalSeq: i + 1 }))
+                        .map((a, i) => ({ ...a, originalIndex: i, globalSeq: i + 1 }))
                         .filter(a => a.affiliationIndices && a.affiliationIndices.includes(affIndex));
                     
+                    linkedAuthors.forEach(a => processedAuthorIndices.add(a.originalIndex));
+
                     if (linkedAuthors.length === 0) return ''; 
 
                     const authorsXml = linkedAuthors.map(author => `
             <author seq="${author.globalSeq}"${author.orcid ? ` orcid="${author.orcid}"` : ''}${author.isCorresponding ? ' type="corresp"' : ''}>
               <ce:initials>${author.initials || ''}</ce:initials>
-              <ce:surname>${author.surname}</ce:surname>
-              <ce:given-name>${author.firstName}</ce:given-name>${author.suffix ? `\n              <ce:suffix>${author.suffix}</ce:suffix>` : ''}${author.degree ? `\n              <ce:degrees>${author.degree}</ce:degrees>` : ''}${author.email ? `\n              <ce:e-address>${author.email}</ce:e-address>` : ''}
+              <ce:surname>${author.surname || ''}</ce:surname>
+              <ce:given-name>${author.firstName || ''}</ce:given-name>${author.suffix ? `\n              <ce:suffix>${author.suffix}</ce:suffix>` : ''}${author.degree ? `\n              <ce:degrees>${author.degree}</ce:degrees>` : ''}${author.email ? `\n              <ce:e-address>${author.email}</ce:e-address>` : ''}
             </author>`).join('');
 
                     const orgsXml = aff.organizations && aff.organizations.length > 0 
@@ -232,10 +258,30 @@
               ${aff.state ? `<state>${aff.state}</state>` : ''}
               ${aff.postalCode ? `<postal-code>${aff.postalCode}</postal-code>` : ''}
               ${aff.countryCode ? `<country iso-code="${aff.countryCode}"/>` : (aff.country ? `<country>${aff.country}</country>` : '')}
-              <ce:source-text>${aff.text}</ce:source-text>
+              <ce:source-text>${aff.text || ''}</ce:source-text>
             </affiliation>
           </author-group>`;
                 }).join('');
+            }
+
+            // Handle Orphans
+            const orphanAuthors = data.authors
+                .map((a, i) => ({ ...a, originalIndex: i, globalSeq: i + 1 }))
+                .filter(a => !processedAuthorIndices.has(a.originalIndex));
+
+            if (orphanAuthors.length > 0) {
+                const orphanXml = orphanAuthors.map(author => `
+            <author seq="${author.globalSeq}"${author.orcid ? ` orcid="${author.orcid}"` : ''}${author.isCorresponding ? ' type="corresp"' : ''}>
+              <ce:initials>${author.initials || ''}</ce:initials>
+              <ce:surname>${author.surname || ''}</ce:surname>
+              <ce:given-name>${author.firstName || ''}</ce:given-name>${author.suffix ? `\n              <ce:suffix>${author.suffix}</ce:suffix>` : ''}${author.degree ? `\n              <ce:degrees>${author.degree}</ce:degrees>` : ''}${author.email ? `\n              <ce:e-address>${author.email}</ce:e-address>` : ''}
+            </author>`).join('');
+                
+                authorGroupsXML += `
+          <author-group seq="orphan">
+            ${orphanXml}
+            <affiliation/>
+          </author-group>`;
             }
 
             const keywordsXML = data.keywords && data.keywords.length > 0 ? `
@@ -323,8 +369,8 @@
             ${data.references ? data.references.map((ref, i) => `
             <reference seq="${i + 1}">
               <ref-info/>
-              <ref-fulltext>${ref}</ref-fulltext>
-              <ce:source-text>${ref}</ce:source-text>
+              <ref-fulltext>${ref.fullText}</ref-fulltext>
+              <ce:source-text>${ref.text}</ce:source-text>
             </reference>`).join('') : ''}
           </bibliography>
         </tail>
@@ -520,7 +566,7 @@
                                     <div>
                                         <h4 className="text-xs font-bold text-slate-400 uppercase mb-2">References (${data.references ? data.references.length : 0})</h4>
                                         <div className="text-[10px] text-slate-400 space-y-1 pl-2">
-                                            ${data.references && data.references.map((r,i) => html`<div className="mb-1 flex gap-2"><span className="text-slate-300 font-mono min-w-[20px]">${i+1}.</span><span>${r}</span></div>`)}
+                                            ${data.references && data.references.map((r,i) => html`<div className="mb-1 flex gap-2"><span className="text-slate-300 font-mono min-w-[20px]">${i+1}.</span><span>${r.fullText}</span></div>`)}
                                         </div>
                                     </div>
                                 </div>

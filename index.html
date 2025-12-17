@@ -10,6 +10,10 @@
     <!-- PDF.js Styles and Scripts -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf_viewer.min.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    
+    <!-- JSZip for Zip Extraction -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
     <script>
       // Initialize PDF.js worker
       document.addEventListener('DOMContentLoaded', () => {
@@ -41,12 +45,22 @@
         right: 0;
         bottom: 0;
         overflow: hidden;
-        opacity: 0.2;
         line-height: 1.0;
+        opacity: 0.8;
+        mix-blend-mode: multiply;
+      }
+      .textLayer span {
+        color: transparent;
+        position: absolute;
+        white-space: pre;
+        cursor: text;
+        transform-origin: 0% 0%;
+      }
+      /* Highlight style */
+      ::selection {
+        background: rgba(0, 217, 255, 0.3); 
       }
     </style>
-
-<link rel="stylesheet" href="/index.css">
   <script type="importmap">
 {
   "imports": {
@@ -58,9 +72,8 @@
   }
 }
 </script>
-  <script type="module" crossorigin src="/Ace-Bulk-Extractor/assets/index-B7OBM0sg.js"></script>
 </head>
   <body>
     <div id="root"></div>
-</body>
+  </body>
 </html>

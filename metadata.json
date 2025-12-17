@@ -1,5 +1,5 @@
 {
-  "name": "Ace - bulk - hosted",
-  "description": "ACE - Apeiro Citation Extractor. A specialized extraction tool for ACE papers adhering to CAR 2.0 business rules.",
+  "name": "ACE - Apeiro Citation Extractor ",
+  "description": "ACE - Apeiro Citation Extractor. A specialized extraction tool designed by Apeiro with Gemini power",
   "requestFramePermissions": []
 }

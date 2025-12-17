@@ -1,19 +1,22 @@
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Header from './components/Header';
 import Dashboard from './components/Dashboard';
 import CaseDetail from './components/CaseDetail';
 import Jukebox from './components/Jukebox';
 import NewsTicker from './components/NewsTicker';
+import Login from './components/Login';
+import AdminPanel from './components/AdminPanel';
 import { parseContentWithGemini } from './services/geminiService';
-import { ExtractedData, ParsingStatus, MultiFileInput, Case } from './types';
+import { ExtractedData, ParsingStatus, MultiFileInput, Case, User, HistoricalSession } from './types';
 import { groupFilesIntoCases } from './utils/fileGrouping';
 
-// Concurrency limit to protect API rate limits (Free/Tier 1 usually ~15 RPM, Paid ~60 RPM)
-// Setting to 5 simultaneous requests ensures we drain the queue fast but stay safe.
-const CONCURRENCY_LIMIT = 5; 
+const CONCURRENCY_LIMIT = 2; 
 
 const App: React.FC = () => {
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [showAdmin, setShowAdmin] = useState(false);
+
   // Global Case State
   const [cases, setCases] = useState<Case[]>([]);
   const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
@@ -23,12 +26,16 @@ const App: React.FC = () => {
   const [activeProcessingCount, setActiveProcessingCount] = useState(0);
   
   const [sessionStartTime, setSessionStartTime] = useState<number | null>(null);
-  const [sessionEndTime, setSessionEndTime] = useState<number | null>(null); // New state for stopping timer
+  const [sessionEndTime, setSessionEndTime] = useState<number | null>(null);
   const [isJukeboxOpen, setIsJukeboxOpen] = useState(false);
 
+  // --- Login Handler ---
+  const handleLogin = (user: User) => {
+    setCurrentUser(user);
+  };
+
   // --- 1. File Upload & Grouping ---
-  const handleBulkUpload = (files: File[]) => {
-    // Reset session timer if we are starting a fresh batch from zero
+  const handleBulkUpload = async (files: File[]) => {
     if (cases.length === 0) {
         setSessionStartTime(Date.now());
         setSessionEndTime(null);
@@ -36,9 +43,75 @@ const App: React.FC = () => {
         setSessionStartTime(Date.now());
     }
     
-    const newCases = groupFilesIntoCases(files);
+    const processedFiles: File[] = [];
+    // Identify Zips based on extension and MIME type
+    const zipFiles = files.filter(f => 
+        f.name.toLowerCase().endsWith('.zip') || 
+        f.type.includes('zip') || 
+        f.type.includes('compressed')
+    );
+    const normalFiles = files.filter(f => !zipFiles.includes(f));
+
+    // Add normal files immediately
+    processedFiles.push(...normalFiles);
+
+    // Process Zip Files
+    if (zipFiles.length > 0) {
+        const JSZip = (window as any).JSZip;
+        
+        if (JSZip) {
+            await Promise.all(zipFiles.map(async (zipFile) => {
+                try {
+                    const zip = new JSZip();
+                    const content = await zip.loadAsync(zipFile);
+                    
+                    const entries = Object.keys(content.files).map(key => content.files[key]);
+                    
+                    const extractedFiles = await Promise.all(entries.map(async (entry: any) => {
+                        // Skip directories and Mac OS metadata
+                        if (entry.dir || entry.name.includes('__MACOSX') || entry.name.split('/').pop()?.startsWith('.')) {
+                            return null;
+                        }
+                        
+                        try {
+                            const blob = await entry.async('blob');
+                            const fileName = entry.name.split('/').pop() || entry.name;
+                            
+                            // Basic Type Inference if blob.type is empty (common in zips)
+                            let type = blob.type;
+                            if (!type || type === '') {
+                                const ext = fileName.split('.').pop()?.toLowerCase();
+                                if (ext === 'pdf') type = 'application/pdf';
+                                else if (ext === 'json') type = 'application/json';
+                                else if (ext === 'html' || ext === 'htm') type = 'text/html';
+                                else if (ext === 'txt') type = 'text/plain';
+                                else type = 'application/octet-stream';
+                            }
+
+                            return new File([blob], fileName, { type });
+                        } catch (err) {
+                            console.warn(`Failed to extract entry ${entry.name}`, err);
+                            return null;
+                        }
+                    }));
+                    
+                    // Filter out nulls
+                    const validFiles = extractedFiles.filter((f): f is File => f !== null);
+                    processedFiles.push(...validFiles);
+                    
+                } catch (e) {
+                    console.error(`Error processing zip file: ${zipFile.name}`, e);
+                    // If ZIP fails, we might want to alert, but for bulk operations, logging is safer
+                }
+            }));
+        } else {
+            console.error("JSZip library not available. Skipping zip extraction.");
+            alert("System Error: ZIP processing engine (JSZip) is not loaded. Please refresh the page.");
+        }
+    }
+
+    const newCases = groupFilesIntoCases(processedFiles);
     
-    // Efficiently merge new cases avoiding duplicates by ID
     setCases(prev => {
         const existingIds = new Set(prev.map(c => c.id));
         const filteredNew = newCases.filter(c => !existingIds.has(c.id));
@@ -47,7 +120,6 @@ const App: React.FC = () => {
   };
 
   // --- 2. Processing Logic (Worker) ---
-  
   const extractPdfText = async (file: File): Promise<string> => {
     if (!(window as any).pdfjsLib) return '';
     try {
@@ -60,7 +132,7 @@ const App: React.FC = () => {
         const pdf = await loadingTask.promise;
         
         let fullText = '';
-        const maxPages = Math.min(pdf.numPages, 50); // Limit to 50 pages for speed
+        const maxPages = Math.min(pdf.numPages, 50); 
         for (let i = 1; i <= maxPages; i++) {
              const page = await pdf.getPage(i);
              const textContent = await page.getTextContent();
@@ -92,9 +164,7 @@ const App: React.FC = () => {
     });
   };
 
-  // The Atomic Process Function
   const processCase = useCallback(async (caseId: string, manualId?: string) => {
-    // 1. Mark as Processing & Set Start Time
     const startTime = Date.now();
     setCases(prev => prev.map(c => c.id === caseId ? { ...c, status: ParsingStatus.PROCESSING, error: undefined, startTime } : c));
 
@@ -107,24 +177,20 @@ const App: React.FC = () => {
     try {
         const { pdf } = currentCase.files;
         
-        // 1. Text Extraction
         let pdfText = '';
         try { pdfText = await extractPdfText(pdf); } catch(e) {}
         
-        // 2. Base64 Fallback
         let pdfBase64: string | undefined = undefined;
         if (!pdfText || pdfText.length < 500) {
             pdfBase64 = await readFileAsBase64(pdf);
         }
 
-        // 3. Read Support Files
         const [apiContent, htmlContent, scrapeContent] = await Promise.all([
             currentCase.files.api ? readFileAsText(currentCase.files.api) : undefined,
             currentCase.files.html ? readFileAsText(currentCase.files.html) : undefined,
             currentCase.files.scrape ? readFileAsText(currentCase.files.scrape) : undefined
         ]);
 
-        // 4. Gemini Call
         const input: MultiFileInput = {
             pdfBase64,
             pdfText,
@@ -140,7 +206,6 @@ const App: React.FC = () => {
             result.documentText = pdfText;
         }
 
-        // 5. Success
         const endTime = Date.now();
         const duration = endTime - startTime;
         
@@ -149,7 +214,8 @@ const App: React.FC = () => {
             status: ParsingStatus.SUCCESS, 
             extractedData: result,
             processingTime: duration,
-            endTime
+            endTime,
+            qcStartTime: endTime // Start QC timer immediately upon success
         } : c));
 
     } catch (error: any) {
@@ -163,99 +229,136 @@ const App: React.FC = () => {
     }
   }, [cases]);
 
-  // --- 3. Queue Processor Effect ---
-  // This essentially acts as a thread pool manager
   useEffect(() => {
-    // If we have items in queue AND we haven't hit concurrency limit
     if (processingQueue.length > 0 && activeProcessingCount < CONCURRENCY_LIMIT) {
         const nextId = processingQueue[0];
-        
-        // Remove from queue immediately
         setProcessingQueue(prev => prev.slice(1));
-        
-        // Increment active count
         setActiveProcessingCount(prev => prev + 1);
-
-        // Process logic
         processCase(nextId).finally(() => {
-            // Decrement active count when done (success or fail)
             setActiveProcessingCount(prev => prev - 1);
         });
     }
   }, [processingQueue, activeProcessingCount, processCase]);
 
-  // --- 4. Global Timer Stop Logic ---
   useEffect(() => {
-      // Check if all work is done
       const hasStarted = sessionStartTime !== null;
       const queueEmpty = processingQueue.length === 0;
       const noActiveWorkers = activeProcessingCount === 0;
-      // Also ensure at least one case has finished or there are cases loaded
-      const hasCases = cases.length > 0;
-      const allProcessed = cases.every(c => c.status === ParsingStatus.SUCCESS || c.status === ParsingStatus.ERROR || c.status === ParsingStatus.IDLE);
-      // Wait until we have actually processed something if we started
       const someProcessed = cases.some(c => c.status === ParsingStatus.SUCCESS || c.status === ParsingStatus.ERROR);
 
       if (hasStarted && queueEmpty && noActiveWorkers && someProcessed && !sessionEndTime) {
-          // If queue is empty and workers are 0, we are done.
           setSessionEndTime(Date.now());
       } else if (hasStarted && (!queueEmpty || activeProcessingCount > 0) && sessionEndTime) {
-          // Resumed processing
           setSessionEndTime(null);
       }
   }, [processingQueue.length, activeProcessingCount, cases, sessionStartTime, sessionEndTime]);
 
-
-  // Public handlers
   const handleProcessAll = () => {
-      // Find all cases that are IDLE or ERROR
       const pendingCases = cases.filter(c => c.status === ParsingStatus.IDLE || c.status === ParsingStatus.ERROR);
-      // Add their IDs to the queue
       setProcessingQueue(prev => [...prev, ...pendingCases.map(c => c.id)]);
-      // Reset end time if restarting
       setSessionEndTime(null);
       if (!sessionStartTime) setSessionStartTime(Date.now());
   };
 
   const handleProcessSingle = (caseId: string, manualId?: string) => {
-      // Add single ID to queue
       setProcessingQueue(prev => [...prev, caseId]);
       setSessionEndTime(null);
       if (!sessionStartTime) setSessionStartTime(Date.now());
   };
 
   const handleDataUpdate = (caseId: string, newData: ExtractedData) => {
-      setCases(prev => prev.map(c => c.id === caseId ? { 
-          ...c, 
-          extractedData: newData,
-          isEdited: true // Mark as edited
-      } : c));
-  };
-  
-  const handleReset = () => {
-    if (window.confirm("Are you sure you want to reset? This will clear all uploaded cases.")) {
-        setCases([]);
-        setProcessingQueue([]);
-        setActiveCaseId(null);
-        setSessionStartTime(null);
-        setSessionEndTime(null);
-        setActiveProcessingCount(0);
-    }
+      setCases(prev => prev.map(c => {
+          if (c.id === caseId) {
+             return { 
+                ...c, 
+                extractedData: newData,
+                isEdited: true
+             };
+          }
+          return c;
+      }));
   };
 
+  const handleFinalizeQC = (caseId: string) => {
+      const now = Date.now();
+      setCases(prev => prev.map(c => {
+          if (c.id === caseId && c.qcStartTime) {
+              return {
+                  ...c,
+                  qcEndTime: now,
+                  qcDuration: now - c.qcStartTime
+              };
+          }
+          return c;
+      }));
+  };
+  
+  const handleReset = useCallback(() => {
+    // Removed window.confirm to ensure buttons are responsive.
+    // User can reset immediately.
+    
+    try {
+        // 1. Prepare History Item
+        if (cases.length > 0) {
+            const historyItem: HistoricalSession = {
+                sessionId: new Date().getTime().toString(36).toUpperCase(),
+                date: new Date().toISOString(),
+                cases: [...cases], // Create copy
+                stats: {
+                    total: cases.length,
+                    completed: cases.filter(c => c.status === ParsingStatus.SUCCESS).length,
+                    avgDuration: cases.reduce((acc, c) => acc + (c.processingTime || 0), 0) / (cases.filter(c => c.processingTime).length || 1)
+                }
+            };
+            
+            // 2. Read Existing
+            const existingHistoryStr = localStorage.getItem('ace_history');
+            let history: HistoricalSession[] = [];
+            if (existingHistoryStr) {
+                try {
+                    history = JSON.parse(existingHistoryStr);
+                } catch (e) {
+                    console.error("Corrupt history data", e);
+                    history = [];
+                }
+            }
+
+            // 3. Append and Save
+            history.push(historyItem);
+            localStorage.setItem('ace_history', JSON.stringify(history));
+            console.log("Session saved to history.");
+        }
+    } catch (e) {
+        console.error("Failed to save history", e);
+    }
+
+    // 4. Hard Reset State
+    setActiveCaseId(null);
+    setProcessingQueue([]);
+    setCases([]);
+    setSessionStartTime(null);
+    setSessionEndTime(null);
+    setActiveProcessingCount(0);
+  }, [cases]);
+
+  if (!currentUser) {
+      return <Login onLogin={handleLogin} />;
+  }
+
   return (
-    <div className="h-screen bg-[#0a0a0a] text-slate-900 relative font-inter flex flex-col overflow-hidden">
+    <div className="h-screen bg-[#050505] text-slate-900 relative font-inter flex flex-col overflow-hidden">
       <Header 
         startTime={sessionStartTime} 
         endTime={sessionEndTime}
         onToggleJukebox={() => setIsJukeboxOpen(!isJukeboxOpen)} 
+        currentUser={currentUser}
+        onOpenAdmin={() => { setShowAdmin(true); setActiveCaseId(null); }}
       />
       
       <main className="flex-grow overflow-hidden relative z-10 flex flex-col pb-8"> 
-        {/* pb-8 added to make room for NewsTicker */}
-        
-        {activeCaseId ? (
-            // Individual Case View
+        {showAdmin ? (
+            <AdminPanel onBack={() => setShowAdmin(false)} currentUser={currentUser} />
+        ) : activeCaseId ? (
             (() => {
                 const activeCase = cases.find(c => c.id === activeCaseId);
                 if (!activeCase) return <div>Case Not Found</div>;
@@ -266,11 +369,11 @@ const App: React.FC = () => {
                         onBack={() => setActiveCaseId(null)}
                         onAnalyze={handleProcessSingle}
                         onUpdateCaseData={handleDataUpdate}
+                        onFinalizeQC={handleFinalizeQC}
                     />
                 );
             })()
         ) : (
-            // Dashboard View
             <Dashboard 
                 cases={cases}
                 onUpload={handleBulkUpload}
@@ -283,7 +386,6 @@ const App: React.FC = () => {
         )}
       </main>
 
-      {/* Persistent UI Elements */}
       <NewsTicker />
       <Jukebox isOpen={isJukeboxOpen} onClose={() => setIsJukeboxOpen(false)} />
     </div>

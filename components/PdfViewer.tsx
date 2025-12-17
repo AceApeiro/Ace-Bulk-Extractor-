@@ -1,6 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { FileCode, FileJson, Globe, Layers, ZoomIn, ZoomOut, RotateCcw, AlignLeft, X, FileText, ScanLine, Copy, Check, ChevronLeft, ChevronRight, Loader } from 'lucide-react';
+import { FileCode, FileJson, Globe, Layers, ZoomIn, ZoomOut, RotateCcw, X, FileText, ScanLine, Copy, Check, ChevronLeft, ChevronRight, Loader, BookOpen, Bot, Search, ExternalLink, Maximize, Maximize2 } from 'lucide-react';
+import ManualGuide from './ManualGuide';
 
 // Declaration for PDF.js global
 declare global {
@@ -16,13 +17,20 @@ interface PdfViewerProps {
   scrapeContent: string | null;
   highlightText?: string | null;
   extractedText?: string | null;
+  onToggleAgent?: () => void;
+  isAgentOpen?: boolean;
 }
 
-const PdfViewer: React.FC<PdfViewerProps> = ({ pdfUrl, apiContent, htmlContent, scrapeContent, highlightText, extractedText }) => {
+const PdfViewer: React.FC<PdfViewerProps> = ({ pdfUrl, apiContent, htmlContent, scrapeContent, highlightText, extractedText, onToggleAgent, isAgentOpen }) => {
   const [activeTab, setActiveTab] = useState<'pdf' | 'api' | 'html' | 'scrape' | 'text'>('pdf');
   const [zoom, setZoom] = useState<number>(1.0); // 1.0 = 100%
+  const [isMagnifying, setIsMagnifying] = useState(false);
+  const [magnifierPos, setMagnifierPos] = useState({ x: 0, y: 0 });
+  const [magnifierSize, setMagnifierSize] = useState(150);
   const [copied, setCopied] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
+  const [isManualOpen, setIsManualOpen] = useState(false);
+  const [pageInput, setPageInput] = useState<string>("1");
 
   // PDF.js State
   const [pdfDoc, setPdfDoc] = useState<any>(null);
@@ -35,19 +43,17 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ pdfUrl, apiContent, htmlContent, 
   const textLayerRef = useRef<HTMLDivElement>(null);
   const renderTaskRef = useRef<any>(null);
 
-  // Default to PDF if available
-  useEffect(() => {
-    if (pdfUrl) {
-       // logic to stay on pdf usually
-    }
-  }, [pdfUrl]);
-
   // Auto-switch to PDF tab on highlight if PDF exists
   useEffect(() => {
     if (highlightText && pdfUrl) {
       setActiveTab('pdf');
     }
   }, [highlightText, pdfUrl]);
+
+  // Sync page input
+  useEffect(() => {
+      setPageInput(pageNum.toString());
+  }, [pageNum]);
 
   // Load PDF Document
   useEffect(() => {
@@ -61,7 +67,9 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ pdfUrl, apiContent, htmlContent, 
              throw new Error("PDF.js library not loaded");
           }
 
-          // Important: Explicitly set worker source again just in case index.html timing was off
+          // Force using the CDN worker if local loading fails, but handle CORS for Blob URLs carefully
+          // If we are serving this via file:// or simple local server, worker needs to be same origin or cors enabled
+          // Using the CDN usually works fine for blob URLs created in the same context
           if (!window.pdfjsLib.GlobalWorkerOptions.workerSrc) {
              window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
           }
@@ -73,6 +81,8 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ pdfUrl, apiContent, htmlContent, 
           setNumPages(doc.numPages);
           setPageNum(1);
           setIsRendering(false);
+          // Initial fit to width
+          setTimeout(() => handleFitToWidth(doc), 100);
         } catch (err: any) {
           console.error("Error loading PDF:", err);
           setError("Failed to load PDF document. " + (err.message || ""));
@@ -89,33 +99,44 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ pdfUrl, apiContent, htmlContent, 
 
   // Render Page
   useEffect(() => {
+    let isCancelled = false;
+
     const renderPage = async () => {
       // Initial checks
-      if (!pdfDoc || !activeTab) return;
-      // We check canvasRef.current late inside execution or just return if not activeTab='pdf'
-      // But let's check basic sanity
-      if (activeTab !== 'pdf') return;
+      if (!pdfDoc || !activeTab || activeTab !== 'pdf') return;
+      
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
+      // Ensure any previous render task is cancelled
+      if (renderTaskRef.current) {
+        try {
+            renderTaskRef.current.cancel();
+        } catch (err) {
+            // Ignore cancel errors
+        }
+        renderTaskRef.current = null;
+      }
+
+      if (isCancelled) return;
 
       try {
-        // Cancel previous render if existing
-        if (renderTaskRef.current) {
-          await renderTaskRef.current.cancel();
-        }
-
+        setIsRendering(true);
         const page = await pdfDoc.getPage(pageNum);
-        const viewport = page.getViewport({ scale: zoom * 1.5 }); // Base scale boost for clarity
+        
+        if (isCancelled) return;
 
-        const canvas = canvasRef.current;
-        // FIX: Check if canvas exists after async call
-        if (!canvas) return;
+        const viewport = page.getViewport({ scale: zoom * 1.5 });
 
         const context = canvas.getContext('2d');
         if (!context) return;
 
         canvas.height = viewport.height;
         canvas.width = viewport.width;
+        // Adjust CSS width/height for high-DPI
+        canvas.style.width = `${viewport.width / 1.5}px`;
+        canvas.style.height = `${viewport.height / 1.5}px`;
 
-        // Render Canvas
         const renderContext = {
           canvasContext: context,
           viewport: viewport,
@@ -126,41 +147,82 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ pdfUrl, apiContent, htmlContent, 
 
         await renderTask.promise;
 
-        // Render Text Layer (for selection/highlighting)
+        if (renderTaskRef.current === renderTask) {
+            renderTaskRef.current = null;
+        }
+
+        if (isCancelled) return;
+
         if (textLayerRef.current) {
              const textContent = await page.getTextContent();
+             if (isCancelled) return;
              
-             // Check if ref still exists after await
              if (textLayerRef.current) {
-                 textLayerRef.current.innerHTML = ''; // Clear previous
-                 textLayerRef.current.style.height = `${viewport.height}px`;
-                 textLayerRef.current.style.width = `${viewport.width}px`;
-                 
-                 // FIX: Set CSS variable for PDF.js 3.11+
-                 textLayerRef.current.style.setProperty('--scale-factor', `${viewport.scale}`);
+                 textLayerRef.current.innerHTML = ''; 
+                 // Match canvas dimensions exactly
+                 textLayerRef.current.style.height = `${viewport.height / 1.5}px`;
+                 textLayerRef.current.style.width = `${viewport.width / 1.5}px`;
+                 // CSS Scale variable for PDF.js text layer
+                 textLayerRef.current.style.setProperty('--scale-factor', `${zoom * 1.5 / 1.5}`); // simplified to zoom
 
-                 // PDF.js utility to render text layer
-                 window.pdfjsLib.renderTextLayer({
-                     textContentSource: textContent,
+                 const textLayerRenderTask = window.pdfjsLib.renderTextLayer({
+                     textContent: textContent,
                      container: textLayerRef.current,
-                     viewport: viewport,
+                     viewport: page.getViewport({ scale: zoom * 1.5 / 1.5 }), // viewport for text layer needs to match CSS size
                      textDivs: []
                  });
+                 
+                 await textLayerRenderTask.promise;
+
+                 // Apply Highlighting
+                 if (highlightText && highlightText.length >= 2) {
+                     const spans = textLayerRef.current.querySelectorAll('span');
+                     const searchStr = highlightText.toLowerCase();
+                     
+                     spans.forEach((span: HTMLElement) => {
+                         const text = span.textContent?.toLowerCase() || '';
+                         if (text.includes(searchStr)) {
+                             span.style.backgroundColor = 'rgba(255, 255, 0, 0.4)';
+                             span.style.borderRadius = '2px';
+                             span.style.boxShadow = '0 0 4px rgba(255, 255, 0, 0.6)';
+                             // Scroll to first match
+                             span.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                         }
+                     });
+                 }
              }
         }
 
+        setIsRendering(false);
       } catch (err: any) {
         if (err.name !== 'RenderingCancelledException') {
             console.error("Page render error:", err);
+            if (!isCancelled) setError("Render error: " + err.message);
         }
+        if (!isCancelled) setIsRendering(false);
       }
     };
 
     if (pdfDoc && activeTab === 'pdf') {
         renderPage();
     }
-  }, [pdfDoc, pageNum, zoom, activeTab]);
 
+    return () => {
+      isCancelled = true;
+      if (renderTaskRef.current) {
+          try { renderTaskRef.current.cancel(); } catch (e) {}
+          renderTaskRef.current = null;
+      }
+    };
+  }, [pdfDoc, pageNum, zoom, activeTab, highlightText]);
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+      if (!isMagnifying) return;
+      const rect = contentRef.current?.getBoundingClientRect();
+      if (rect) {
+          setMagnifierPos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+      }
+  };
 
   const TabButton = ({ id, label, icon: Icon, disabled }: { id: typeof activeTab, label: string, icon: any, disabled: boolean }) => (
     <button
@@ -191,12 +253,51 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ pdfUrl, apiContent, htmlContent, 
     );
   };
 
-  const handleZoomIn = () => setZoom(prev => Math.min(prev + 0.25, 3.0));
-  const handleZoomOut = () => setZoom(prev => Math.max(prev - 0.25, 0.5));
+  const handleZoomIn = () => setZoom(prev => Math.min(prev + 0.1, 3.0));
+  const handleZoomOut = () => setZoom(prev => Math.max(prev - 0.1, 0.5));
   const handleZoomReset = () => setZoom(1.0);
+
+  const handleFitToWidth = async (docInstance = pdfDoc) => {
+      if (!docInstance) return;
+      try {
+          const page = await docInstance.getPage(pageNum);
+          const viewport = page.getViewport({ scale: 1.0 });
+          const containerWidth = contentRef.current?.clientWidth || 800;
+          // Calculate zoom to fit container width minus padding
+          const targetZoom = (containerWidth - 40) / viewport.width;
+          setZoom(targetZoom);
+      } catch (e) { console.error(e); }
+  };
+
+  const handleFitToPage = async () => {
+      if (!pdfDoc) return;
+      try {
+          const page = await pdfDoc.getPage(pageNum);
+          const viewport = page.getViewport({ scale: 1.0 });
+          const containerHeight = contentRef.current?.clientHeight || 800;
+          const targetZoom = (containerHeight - 40) / viewport.height;
+          setZoom(targetZoom);
+      } catch (e) { console.error(e); }
+  };
 
   const changePage = (offset: number) => {
       setPageNum(prev => Math.min(Math.max(1, prev + offset), numPages));
+  };
+  
+  const handlePageInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const val = e.target.value;
+      setPageInput(val);
+  };
+  
+  const handlePageSubmit = (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter') {
+          const p = parseInt(pageInput);
+          if (!isNaN(p) && p >= 1 && p <= numPages) {
+              setPageNum(p);
+          } else {
+              setPageInput(pageNum.toString());
+          }
+      }
   };
 
   const handleCopy = () => {
@@ -207,8 +308,39 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ pdfUrl, apiContent, htmlContent, 
     }
   };
 
+  const handlePopOut = () => {
+      const w = window.open('', '_blank', 'width=800,height=900,menubar=no,toolbar=no,location=no');
+      if (!w) return;
+      
+      let content = '';
+      // Cannot easily popout blob PDF URL due to security contexts, text fallback
+      if (activeTab === 'pdf' && pdfUrl) {
+          // Provide instruction or fallback since blobs revoke
+          content = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#ccc;font-family:sans-serif;">PDF Popout restricted by browser security. Please use the main viewer.</div>`;
+      } else if (activeTab === 'html' && htmlContent) {
+          content = htmlContent;
+      } else if (activeTab === 'api' && apiContent) {
+          content = `<pre style="white-space:pre-wrap;font-family:monospace;padding:10px;">${apiContent}</pre>`;
+      } else if (activeTab === 'scrape' && scrapeContent) {
+          content = `<pre style="white-space:pre-wrap;font-family:monospace;padding:10px;">${scrapeContent}</pre>`;
+      }
+
+      w.document.write(`
+        <html>
+            <head><title>ACE View: ${activeTab.toUpperCase()}</title></head>
+            <body style="margin:0;padding:0;background:#1a1a1a;color:#ccc;overflow:hidden;height:100vh;">
+                ${content}
+            </body>
+        </html>
+      `);
+      w.document.close();
+  };
+
   return (
     <div className="h-full flex flex-col bg-slate-900 rounded-xl shadow-lg border border-slate-800 overflow-hidden relative">
+      <ManualGuide isOpen={isManualOpen} onClose={() => setIsManualOpen(false)} />
+      
+      {/* Top Bar: Tabs & Tools */}
       <div className="flex items-center justify-between bg-slate-950 border-b border-slate-800 h-12 flex-shrink-0 px-2">
         <div className="flex items-center h-full overflow-x-auto custom-scrollbar no-scrollbar mr-4">
             <TabButton id="pdf" label="PDF Reader" icon={FileText} disabled={!pdfUrl} />
@@ -218,25 +350,101 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ pdfUrl, apiContent, htmlContent, 
             <TabButton id="scrape" label="Scrape Data" icon={FileJson} disabled={!scrapeContent} />
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+            
+            {/* Popout */}
+            <button
+                onClick={handlePopOut}
+                disabled={activeTab === 'pdf' || (activeTab === 'text' && !extractedText)}
+                className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
+                title="Pop out in new window"
+            >
+                <ExternalLink className="w-3.5 h-3.5"/>
+            </button>
+
+            {/* Operator Manual */}
+            <button 
+                onClick={() => setIsManualOpen(true)}
+                className="flex items-center gap-2 px-3 py-1.5 text-[10px] font-bold bg-purple-900/30 text-purple-300 border border-purple-800 rounded hover:bg-purple-900/50 transition-all shadow-[0_0_10px_rgba(168,85,247,0.2)]"
+            >
+                <BookOpen className="w-3 h-3" /> MANUAL
+            </button>
+            
+            {/* AI Agent Trigger */}
+            {onToggleAgent && (
+                <button 
+                    onClick={onToggleAgent}
+                    className={`flex items-center gap-2 px-3 py-1.5 text-[10px] font-bold border rounded transition-all ${isAgentOpen ? 'bg-green-600 text-white border-green-500' : 'bg-slate-800 text-green-400 border-slate-700 hover:bg-slate-700'}`}
+                >
+                    <Bot className="w-3 h-3" /> AGENT
+                </button>
+            )}
+
+            <div className="h-4 w-[1px] bg-slate-800 mx-1"></div>
+
             {/* Pagination Controls */}
              {activeTab === 'pdf' && pdfUrl && numPages > 0 && (
                 <div className="flex items-center space-x-1 bg-slate-900/50 rounded-lg border border-slate-800/50 h-8 px-1">
                      <button onClick={() => changePage(-1)} disabled={pageNum <= 1} className="p-1 text-slate-400 hover:text-white disabled:opacity-30">
                         <ChevronLeft className="w-4 h-4"/>
                      </button>
-                     <span className="text-[10px] text-slate-300 font-mono w-16 text-center">
-                        {pageNum} / {numPages}
-                     </span>
+                     <div className="flex items-center text-[10px] text-slate-300 font-mono">
+                         <input 
+                            value={pageInput}
+                            onChange={handlePageInput}
+                            onKeyDown={handlePageSubmit}
+                            className="w-8 bg-slate-800 border border-slate-700 rounded text-center text-white focus:outline-none focus:border-blue-500"
+                         />
+                         <span className="mx-1">/</span>
+                         <span>{numPages}</span>
+                     </div>
                      <button onClick={() => changePage(1)} disabled={pageNum >= numPages} className="p-1 text-slate-400 hover:text-white disabled:opacity-30">
                         <ChevronRight className="w-4 h-4"/>
                      </button>
                 </div>
             )}
 
-            {/* Zoom Controls (Only for PDF) */}
+            {/* Zoom & Magnify Controls */}
             {activeTab === 'pdf' && pdfUrl && (
                 <div className="flex items-center px-2 space-x-1 bg-slate-900/50 rounded-lg border border-slate-800/50 h-8">
+                    {/* Magnifier Controls */}
+                    <div className="flex items-center gap-1 border-r border-slate-800 pr-2 mr-1">
+                        <button 
+                            onClick={() => setIsMagnifying(!isMagnifying)}
+                            className={`p-1.5 rounded transition-colors ${isMagnifying ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
+                            title="Toggle Lens"
+                        >
+                            <Search className="w-3.5 h-3.5" />
+                        </button>
+                        
+                        {/* Magnifier Size Adjustment */}
+                        {isMagnifying && (
+                            <div className="flex items-center gap-1 animate-fadeIn">
+                                <span className="text-[9px] text-slate-500">Size</span>
+                                <input 
+                                    type="range" 
+                                    min="50" 
+                                    max="300" 
+                                    step="10"
+                                    value={magnifierSize} 
+                                    onChange={(e) => setMagnifierSize(parseInt(e.target.value))} 
+                                    className="w-12 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer" 
+                                />
+                            </div>
+                        )}
+                    </div>
+                    
+                    {/* Fit Buttons */}
+                    <button onClick={() => handleFitToWidth()} className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded" title="Fit Width">
+                        <Maximize className="w-3.5 h-3.5" />
+                    </button>
+                    <button onClick={() => handleFitToPage()} className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded" title="Fit Page">
+                        <Maximize2 className="w-3.5 h-3.5" />
+                    </button>
+
+                    <div className="w-[1px] h-4 bg-slate-800 mx-1"></div>
+                    
+                    {/* Zoom Buttons */}
                     <button 
                         onClick={handleZoomOut}
                         className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
@@ -244,7 +452,23 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ pdfUrl, apiContent, htmlContent, 
                     >
                         <ZoomOut className="w-3.5 h-3.5" />
                     </button>
-                    <span className="text-[10px] font-mono text-blue-400 w-10 text-center select-none">{Math.round(zoom * 100)}%</span>
+
+                    <div className="relative group">
+                        <select 
+                            value={Math.round(zoom * 100)}
+                            onChange={(e) => setZoom(parseInt(e.target.value) / 100)}
+                            className="bg-slate-800 text-[10px] font-mono text-blue-400 border border-slate-700 rounded px-1 py-0.5 mx-1 focus:outline-none focus:border-blue-500 appearance-none text-center w-12 cursor-pointer hover:bg-slate-700"
+                        >
+                            <option value="50">50%</option>
+                            <option value="75">75%</option>
+                            <option value="100">100%</option>
+                            <option value="125">125%</option>
+                            <option value="150">150%</option>
+                            <option value="200">200%</option>
+                            <option value="300">300%</option>
+                        </select>
+                    </div>
+
                     <button 
                         onClick={handleZoomIn}
                         className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
@@ -252,20 +476,16 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ pdfUrl, apiContent, htmlContent, 
                     >
                         <ZoomIn className="w-3.5 h-3.5" />
                     </button>
-                    <div className="w-[1px] h-4 bg-slate-800 mx-1"></div>
-                    <button 
-                        onClick={handleZoomReset}
-                        className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
-                        title="Reset Zoom"
-                    >
-                        <RotateCcw className="w-3 h-3" />
-                    </button>
                 </div>
             )}
         </div>
       </div>
 
-      <div className="flex-1 bg-slate-100 relative overflow-auto custom-scrollbar flex flex-col items-center" ref={contentRef}> 
+      <div 
+        className="flex-1 bg-slate-100 relative overflow-auto custom-scrollbar flex flex-col items-center" 
+        ref={contentRef}
+        onMouseMove={handleMouseMove}
+      > 
         {activeTab === 'pdf' && (
           pdfUrl ? (
             <div className="relative my-4 shadow-lg border border-slate-300 bg-white">
@@ -276,10 +496,37 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ pdfUrl, apiContent, htmlContent, 
                     </div>
                 ) : (
                     <>
-                        <canvas ref={canvasRef} className="block" />
-                        {/* Text Layer for Selection */}
+                        {/* Using key to force full remount on page/zoom change to avoid canvas reuse error */}
+                        <canvas 
+                            ref={canvasRef} 
+                            key={`${pdfUrl}-${pageNum}-${zoom}`}
+                            className="block" 
+                        />
                         <div ref={textLayerRef} className="textLayer" />
                         
+                        {/* Magnifying Lens */}
+                        {isMagnifying && !isRendering && (
+                            <div 
+                                className="absolute pointer-events-none border-2 border-blue-500 rounded-full shadow-2xl overflow-hidden bg-white z-50"
+                                style={{
+                                    width: `${magnifierSize}px`,
+                                    height: `${magnifierSize}px`,
+                                    left: magnifierPos.x - (magnifierSize/2),
+                                    top: magnifierPos.y - (magnifierSize/2),
+                                    backgroundImage: canvasRef.current ? `url(${canvasRef.current.toDataURL()})` : 'none',
+                                    backgroundRepeat: 'no-repeat',
+                                    backgroundSize: `${(canvasRef.current?.width || 0) * 2}px ${(canvasRef.current?.height || 0) * 2}px`,
+                                    backgroundPosition: `-${magnifierPos.x * 2 - (magnifierSize/2)}px -${magnifierPos.y * 2 - (magnifierSize/2)}px`
+                                }}
+                            >
+                                <div className="absolute inset-0 bg-blue-500/10 pointer-events-none"></div>
+                                <div className="absolute inset-0 flex items-center justify-center opacity-20">
+                                    <div className="w-[1px] h-4 bg-blue-900"></div>
+                                    <div className="h-[1px] w-4 bg-blue-900 absolute"></div>
+                                </div>
+                            </div>
+                        )}
+
                         {isRendering && (
                             <div className="absolute inset-0 flex items-center justify-center bg-white/50 backdrop-blur-sm z-10">
                                 <Loader className="w-8 h-8 text-blue-500 animate-spin" />
@@ -298,7 +545,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ pdfUrl, apiContent, htmlContent, 
           )
         )}
         
-        {/* Styled OCR Mirror View */}
+        {/* Mirror View */}
         {activeTab === 'text' && extractedText && (
           <div className="w-full h-full overflow-auto custom-scrollbar bg-slate-100 flex flex-col items-center p-8">
             <div className="w-full max-w-[21cm] flex justify-between items-center mb-4 px-1">
@@ -321,23 +568,14 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ pdfUrl, apiContent, htmlContent, 
             </div>
             
             <div className="w-full max-w-[21cm] bg-white shadow-[0_4px_20px_rgba(0,0,0,0.08)] min-h-[29.7cm] p-[2.5cm] relative border border-slate-200">
-                {/* Watermark/Header on the paper */}
-                <div className="absolute top-8 right-8 opacity-10 pointer-events-none select-none">
-                     <span className="font-orbitron text-4xl font-bold uppercase text-slate-900">OCR COPY</span>
-                </div>
-                
                 <div className="font-serif text-slate-900 leading-7 text-justify whitespace-pre-wrap selection:bg-blue-100 selection:text-blue-900 text-sm">
                     {renderHighlightedText(extractedText)}
-                </div>
-                
-                {/* Footer simulation */}
-                <div className="absolute bottom-8 left-0 w-full text-center text-[10px] text-slate-300 font-mono select-none">
-                     ACE EXTRACTED CONTENT • GENERATED BY GEMINI FLASH
                 </div>
             </div>
           </div>
         )}
 
+        {/* API/HTML/Scrape Views */}
         {activeTab === 'api' && apiContent && (
           <div className="w-full h-full p-4 overflow-auto custom-scrollbar bg-[#0d1117]">
             <pre className="text-xs font-mono text-purple-300 whitespace-pre-wrap leading-relaxed">
@@ -362,11 +600,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ pdfUrl, apiContent, htmlContent, 
                 className="w-full h-full border-none block"
                 sandbox="allow-same-origin"
               />
-              {highlightText && (
-                 <div className="absolute bottom-4 right-4 bg-yellow-100 text-yellow-800 text-xs px-3 py-1.5 rounded shadow-md border border-yellow-200">
-                     Highlighting unavailable in HTML Preview.
-                 </div>
-              )}
            </div>
         )}
         

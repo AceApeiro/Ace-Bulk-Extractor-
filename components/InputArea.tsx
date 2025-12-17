@@ -36,67 +36,52 @@ const InputArea: React.FC<InputAreaProps> = ({ onAnalyze, isProcessing, onSelect
   const [validationMsg, setValidationMsg] = useState<string | null>(null);
 
   // Refs
-  const folderInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
 
-  // --- Helper: Auto-Matcher Logic (Synchronous) ---
+  // --- Helper: Auto-Matcher Logic (Strict Version Handling) ---
   const findMatches = useCallback((pdf: File, inventory: File[]) => {
     const pdfName = pdf.name;
     
-    // 1. Extract ArXiv ID (e.g. 2405.12345)
+    // 1. Extract Base ArXiv ID (ignore version v1, v2 for matching grouping)
+    // Matches 2409.09977 from 2409.09977v2.pdf or 2409.09977.pdf
     const arxivMatch = pdfName.match(/(\d{4}\.\d{4,5})/); 
     const bareId = arxivMatch ? arxivMatch[0] : null;
-
-    // 2. Fallback Base Name (strip extension and version suffix like v1, _v2)
-    // Remove .pdf
-    let baseName = pdfName.substring(0, pdfName.lastIndexOf('.')) || pdfName;
-    // Remove version suffix (v1, v2, _v1, etc)
-    baseName = baseName.replace(/[_\.]?v\d+$/i, ''); 
-    const baseNameLower = baseName.toLowerCase();
 
     // Helper: Normalize name for check
     const norm = (s: string) => s.toLowerCase();
 
     const candidates = inventory.filter(f => f !== pdf);
 
+    const isMatch = (file: File) => {
+        const n = norm(file.name);
+        // If we have an ID, use strict ID containment
+        if (bareId) return n.includes(bareId);
+        // Fallback: name similarity (stripped of extension and version)
+        const basePdf = pdfName.replace(/\.[^/.]+$/, "").replace(/v\d+$/, "");
+        return n.includes(norm(basePdf));
+    };
+
     // Scrape File Matcher
     const scrape = candidates.find(f => {
         const n = norm(f.name);
-        // Robust check for 'scrapping' or 'scraping'
-        const isScrapeType = n.includes('scrapping') || n.includes('scraping');
-        if (!isScrapeType) return false;
-
-        // Strict ID match if available
-        if (bareId && n.includes(bareId)) return true;
-        // Fallback: match base name
-        if (n.includes(baseNameLower)) return true;
-        return false;
+        const isScrapeType = n.includes('scrapping') || n.includes('scraping') || n.includes('scrape');
+        return isScrapeType && isMatch(f);
     });
 
     // API File Matcher
     const api = candidates.find(f => {
         const n = norm(f.name);
-        // Avoid confusing with scraping file
         if (n.includes('scrapping') || n.includes('scraping')) return false;
-
-        const isApiType = n.includes('api') || n.endsWith('.json');
-        if (!isApiType) return false;
-
-        if (bareId && n.includes(bareId)) return true;
-        if (n.includes(baseNameLower)) return true;
-        return false;
+        // Generic JSON often API if not scrape
+        const isApiType = n.includes('api') || n.endsWith('.json') || n.endsWith('.xml');
+        return isApiType && isMatch(f);
     });
 
     // HTML File Matcher
     const html = candidates.find(f => {
         const n = norm(f.name);
-        
         const isHtmlType = n.endsWith('.html') || n.endsWith('.htm');
-        if (!isHtmlType) return false;
-        
-        if (bareId && n.includes(bareId)) return true;
-        // HTML often named simply by ID or title, stricter check
-        if (n.includes(baseNameLower)) return true;
-        return false;
+        return isHtmlType && isMatch(f);
     });
 
     return { api: api || null, html: html || null, scrape: scrape || null };
@@ -127,6 +112,13 @@ const InputArea: React.FC<InputAreaProps> = ({ onAnalyze, isProcessing, onSelect
   const handleFolderSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
         const files = Array.from(e.target.files).filter((f: any) => !f.name.startsWith('.')) as File[];
+        
+        if (files.length > 50) {
+            alert("Upload limited to 50 files.");
+            e.target.value = '';
+            return;
+        }
+
         setFolderInventory(files);
         
         // Isolate PDFs
@@ -159,6 +151,11 @@ const InputArea: React.FC<InputAreaProps> = ({ onAnalyze, isProcessing, onSelect
     const files = Array.from(e.dataTransfer.files).filter((f: any) => !f.name.startsWith('.')) as File[];
     if (files.length === 0) return;
     
+    if (files.length > 50) {
+        alert("Upload limited to 50 files.");
+        return;
+    }
+
     setFolderInventory(files);
     const pdfs = files.filter(f => f.name.toLowerCase().endsWith('.pdf'));
     
@@ -195,6 +192,8 @@ const InputArea: React.FC<InputAreaProps> = ({ onAnalyze, isProcessing, onSelect
     if (ids.length > 1) {
       const uniqueIds = Array.from(new Set(ids));
       setValidationMsg(uniqueIds.length > 1 ? "Warning: Filenames indicate potential ArXiv ID mismatch." : null);
+    } else {
+        setValidationMsg(null);
     }
   }, [selectedPdf, apiFile, htmlFile, scrapeFile]);
 
@@ -204,6 +203,9 @@ const InputArea: React.FC<InputAreaProps> = ({ onAnalyze, isProcessing, onSelect
     updateSelection(null, []);
     setManualId('');
     setValidationMsg(null);
+    if (folderInputRef.current) {
+        folderInputRef.current.value = '';
+    }
   };
 
   const processSubmission = () => {
@@ -256,7 +258,7 @@ const InputArea: React.FC<InputAreaProps> = ({ onAnalyze, isProcessing, onSelect
                         file ? (
                             <p className={`text-xs font-semibold text-${colorClass}-900 truncate`}>{file.name}</p>
                         ) : (
-                            <p className="text-[10px] text-slate-400 italic">Not found...</p>
+                            <p className="text-[10px] text-slate-400 italic">Auto-detecting...</p>
                         )
                     )}
                 </div>
@@ -339,10 +341,15 @@ const InputArea: React.FC<InputAreaProps> = ({ onAnalyze, isProcessing, onSelect
         <div className="mb-4">
             <input 
                 type="file" 
-                ref={folderInputRef}
+                ref={(node) => {
+                    folderInputRef.current = node;
+                    if (node) {
+                        node.setAttribute("webkitdirectory", "");
+                        node.setAttribute("directory", "");
+                    }
+                }}
                 onChange={handleFolderSelect}
                 className="hidden"
-                {...({ webkitdirectory: "", directory: "" } as any)}
                 multiple
             />
             
@@ -404,12 +411,12 @@ const InputArea: React.FC<InputAreaProps> = ({ onAnalyze, isProcessing, onSelect
               {isProcessing ? (
                 <>
                   <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent mr-2"></div>
-                  Verifying...
+                  Processing...
                 </>
               ) : (
                 <>
                   <Sparkles className="w-4 h-4 mr-2" />
-                  Verify & Extract
+                  Extract & Verify
                 </>
               )}
             </button>
